@@ -63,6 +63,11 @@
       };
       await pc.setRemoteDescription(answer);
 
+      // ToDo: debug - initial response audio is missed unless this is here
+      //  - I tried adding a delay; telling chatGPT to wait 2 seconds doesn't work
+      const startedSound = new Audio("CrashMacII.wav");  // source: https://en.wikipedia.org/wiki/File:MacStartupChime.ogg
+      await startedSound.play();
+
       console.log("Realtime session initialized successfully!");
     } catch (error) {
       console.error("Error during initialization:", error);

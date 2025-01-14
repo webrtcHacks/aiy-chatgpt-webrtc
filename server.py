@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify, send_file
 from gpiozero import PWMLED, Button
 import subprocess
 
-
+PORT = 3000     # Port for the Flask server
 chromium_process = None
 
 ###################################
@@ -80,13 +80,19 @@ def on_button_press():
             "chromium-browser",
             "--disable-gpu",
             "--autoplay-policy=no-user-gesture-required",
-            "--enable-speech-dispatcher",
+            # "--enable-speech-dispatcher", # unsupported
             "--allow-insecure-localhost",
             "--use-fake-ui-for-media-stream",
             "--unsafely-treat-insecure-origin-as-secure=http://localhost:3000",
-            # "--alsa-input-device=hw:0,0",
-            # "--alsa-output-device=hw:0,0",
-            "http://localhost:3000"  # The page that runs your assistant
+            # "--alsa-input-device=hw:0,0", # default seems to be ok
+            # "--alsa-output-device=hw:0,0", # default seems to be ok
+            "--auto-open-devtools-for-tabs"
+            # disable caching for dev
+            "--incognito",
+            "--disk-cache-dir=/dev/null",
+            "--disk-cache-size=1",
+            "--media-cache-size=1",
+            f"http://localhost:{PORT}"  # The page that runs your assistant
         ])
     else:
         # Switch to blinking, terminate Chromium
@@ -111,8 +117,6 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY is not set in the .env file")
-
-PORT = 3000
 
 
 # Serve files
@@ -140,6 +144,8 @@ def generate_session():
             "instructions": "You are a friendly assistant to a 13-year old named Neev. "
                             "Use gen-Alpha language occasionally, but mostly be professional and helpful. "
                             "Inject emotion into your voice where appropriate. "
+                            "Start every new session with a brief pause and a greeting. "
+                            # "Whenever there is a new session, wait 2 seconds and start with a greeting. "
 
         }
         response = requests.post(
