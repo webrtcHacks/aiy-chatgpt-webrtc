@@ -3,133 +3,101 @@ import threading
 import requests
 from time import sleep
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify, send_file
 from gpiozero import PWMLED, Button
+import asyncio
+import websockets
+import json
 import subprocess
 
-PORT = 3000     # Port for the Flask server
-chromium_process = None
+#######################################
+# Configuration and Global State
+#######################################
+HTTP_PORT = 3000
+WS_PORT = 3001
 
-###################################
-#           LED + Button          #
-###################################
-
-# GPIO pins for LED and button
 LED_PIN = 25
 BUTTON_PIN = 23
 
-# Create objects for LED and button
 led = PWMLED(LED_PIN)
 button = Button(BUTTON_PIN)
 
-# Possible modes: "blinking" or "pulsing"
-led_mode = "blinking"
+led_mode = "off"  # "blinking" or "pulsing"
+session_active = False
 
+connected_clients = set()
+main_loop = None  # We'll store the main event loop here
 
-def run_led():
-    """
-    Runs in a loop on a separate thread.
-    Checks `led_mode` and updates the LED pattern accordingly.
-    """
-    global led_mode
-
-    while True:
-        if led_mode == "blinking":
-            # Slow blink: LED on for 1 second, off for 1 second.
-            led.on()
-            sleep(1)
-            if led_mode != "blinking":
-                continue  # If mode changed mid-sleep, go back to top of loop
-            led.off()
-            sleep(1)
-            # loop repeats as long as led_mode is "blinking"
-
-        elif led_mode == "pulsing":
-            # Pulse loop: fade in and out
-            for brightness in range(0, 101, 5):  # Fade in
-                if led_mode != "pulsing":
-                    break  # If mode changed, break
-                led.value = brightness / 100.0
-                sleep(0.05)
-
-            if led_mode != "pulsing":
-                continue  # Check again if mode changed
-
-            for brightness in range(100, -1, -5):  # Fade out
-                if led_mode != "pulsing":
-                    break
-                led.value = brightness / 100.0
-                sleep(0.05)
-            # loop repeats as long as led_mode is "pulsing"
-
-
-def on_button_press():
-    """
-    Toggles between blinking and pulsing.
-    Also launches Chromium on the first press (pulsing),
-    and terminates Chromium on the second press (blinking).
-    """
-    global led_mode, chromium_process
-    print("Button pressed!")
-
-    if led_mode == "blinking":
-        # Switch to pulsing, launch Chromium
-        led_mode = "pulsing"
-        print("Switching LED mode to pulsing. Launching Chromium...")
-        chromium_process = subprocess.Popen([
-            "chromium-browser",
-            "--disable-gpu",
-            "--autoplay-policy=no-user-gesture-required",
-            # "--enable-speech-dispatcher", # unsupported
-            "--allow-insecure-localhost",
-            "--use-fake-ui-for-media-stream",
-            "--unsafely-treat-insecure-origin-as-secure=http://localhost:3000",
-            # "--alsa-input-device=hw:0,0", # default seems to be ok
-            # "--alsa-output-device=hw:0,0", # default seems to be ok
-            "--auto-open-devtools-for-tabs"
-            # disable caching for dev
-            "--incognito",
-            "--disk-cache-dir=/dev/null",
-            "--disk-cache-size=1",
-            "--media-cache-size=1",
-            f"http://localhost:{PORT}"  # The page that runs your assistant
-        ])
-    else:
-        # Switch to blinking, terminate Chromium
-        led_mode = "blinking"
-        print("Switching LED mode to blinking. Terminating Chromium...")
-        if chromium_process is not None:
-            chromium_process.terminate()
-            chromium_process = None
-
-
-# Attach button press handler
-button.when_pressed = on_button_press
-
-###################################
-#           Flask Server          #
-###################################
-app = Flask(__name__)
-
-# Load environment variables
 load_dotenv()
-
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY is not set in the .env file")
 
 
-# Serve files
-@app.route("/<filename>", methods=["GET"])
-def serve_audio(filename):
-    if filename.endswith(".wav"):
-        return send_file(filename)
+#######################################
+# LED Behavior Thread
+#######################################
+def run_led():
+    global led_mode
+    while True:
+        if led_mode == "blinking":
+            led.on()
+            sleep(1)
+            if led_mode != "blinking":
+                continue
+            led.off()
+            sleep(1)
+        elif led_mode == "pulsing":
+            for brightness in range(0, 101, 5):
+                if led_mode != "pulsing":
+                    break
+                led.value = brightness / 100.0
+                sleep(0.05)
+            if led_mode != "pulsing":
+                continue
+            for brightness in range(100, -1, -5):
+                if led_mode != "pulsing":
+                    break
+                led.value = brightness / 100.0
+                sleep(0.05)
+        elif led_mode == "off":
+            led.off()
+            sleep(1)
+        else:
+            print("ERROR: unknown LED mode:", led_mode)
+            return  # Exit thread
+
+
+#######################################
+# Button Press Callback
+#######################################
+def on_button_press():
+    global session_active, led_mode
+    print("Button pressed!")
+
+    if not session_active:
+        # Start session
+        session_active = True
+        led_mode = "pulsing"
+        ephemeral_key = fetch_ephemeral_key()
+        broadcast_message({
+            "type": "start_session",
+            "ephemeralKey": ephemeral_key
+        })
+        print("Session started, LED pulsing.")
     else:
-        return jsonify({"error": "File not found"}), 404
+        # End session
+        session_active = False
+        led_mode = "blinking"
+        broadcast_message({
+            "type": "end_session"
+        })
+        print("Session ended, LED blinking.")
 
 
-@app.route("/session", methods=["GET"])
-def generate_session():
+#######################################
+# Fetch Ephemeral Key from OpenAI
+#######################################
+def fetch_ephemeral_key():
     try:
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -138,61 +106,158 @@ def generate_session():
         payload = {
             "model": "gpt-4o-realtime-preview-2024-12-17",
             "voice": "alloy",
-            "input_audio_transcription": {
-                "model": "whisper-1"
-            },
-            "instructions": "You are a friendly assistant to a 13-year old named Neev. "
-                            "Use gen-Alpha language occasionally, but mostly be professional and helpful. "
-                            "Inject emotion into your voice where appropriate. "
-                            "Start every new session with a brief pause and a greeting. "
-                            # "Whenever there is a new session, wait 2 seconds and start with a greeting. "
-
+            "input_audio_transcription": {"model": "whisper-1"},
+            "instructions": (
+                "You are a friendly assistant to a 13-year old named Neev. "
+                "Use gen-Alpha language occasionally, but mostly be professional and helpful. "
+                "Start every new session with a brief pause and a greeting."
+            ),
         }
-        response = requests.post(
+        resp = requests.post(
             "https://api.openai.com/v1/realtime/sessions",
             headers=headers,
             json=payload,
         )
-
-        if response.status_code != 200:
-            error_details = response.text
-            print(f"Failed to fetch session: {error_details}")
-            return jsonify({"error": "Failed to create session", "details": error_details}), response.status_code
-
-        # Return the response from OpenAI
-        return jsonify(response.json()), 200
+        if resp.status_code != 200:
+            print("Failed to create ephemeral session:", resp.text)
+            return None
+        data = resp.json()
+        return data["client_secret"]["value"]
     except Exception as e:
-        print(f"Error during /session request: {e}")
-        return jsonify({"error": "Internal server error"}), 500
+        print("Error fetching ephemeral key:", e)
+        return None
 
 
-@app.route("/ready", methods=["GET"])
-def check_ready():
-    return jsonify({"ready": True}), 200
+#######################################
+# Broadcast to All Connected Clients
+#######################################
+def broadcast_message(msg_dict):
+    """
+    Called from the button callback (or elsewhere).
+    We push a coroutine to the *main event loop* using run_coroutine_threadsafe.
+    """
+    text_data = json.dumps(msg_dict)
+    # Use the main_loop we stored in main()
+    if main_loop is not None:
+        asyncio.run_coroutine_threadsafe(_async_broadcast(text_data), main_loop)
+    else:
+        print("Warning: main_loop is not initialized yet; cannot broadcast.")
 
-@app.route("/", methods=["GET"])
-def serve_index():
-    return send_file("index.html")
+
+async def _async_broadcast(text_data):
+    """
+    Actually broadcast the message to each connected WebSocket.
+    Must run in the main event loop context.
+    """
+    if not connected_clients:
+        return
+    to_remove = []
+    for ws in connected_clients:
+        if ws.open:
+            try:
+                await ws.send(text_data)
+            except Exception as e:
+                print("Error sending to client:", e)
+                to_remove.append(ws)
+        else:
+            to_remove.append(ws)
+    for ws in to_remove:
+        connected_clients.discard(ws)
 
 
-###################################
-#              Main               #
-###################################
-if __name__ == "__main__":
-    # Start LED thread
+#######################################
+# WebSocket Handler on port 3001
+#######################################
+async def handler(websocket, path):
+    global led_mode
+    print(f"New WebSocket connection from {websocket.remote_address}")
+    connected_clients.add(websocket)
+    try:
+        async for message in websocket:
+            data = json.loads(message)
+            if data.get("type") == "page_loaded":
+                print("Page loaded – start LED")
+                led_mode = "blinking"  # or whatever you want
+    finally:
+        connected_clients.discard(websocket)
+        print(f"Client {websocket.remote_address} disconnected.")
+
+
+#######################################
+# Simple HTTP Server on port 3000
+#######################################
+def start_http_server():
+    import http.server
+    import socketserver
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def translate_path(self, path):
+            if path == "/":
+                path = "/index.html"
+            return os.getcwd() + path
+
+    httpd = socketserver.TCPServer(("", HTTP_PORT), Handler)
+    print(f"HTTP server serving at port {HTTP_PORT}")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()  # Ensures port is freed on exit
+
+
+#######################################
+# Main Entry Point
+#######################################
+def main():
+    global main_loop
+
+    # 1) Start LED thread
     led_thread = threading.Thread(target=run_led, daemon=True)
     led_thread.start()
 
-    os.environ["DISPLAY"] = ":0"    # needed for the Chromium browser
+    # 2) Start HTTP server (serving index.html) in background
+    http_thread = threading.Thread(target=start_http_server, daemon=True)
+    http_thread.start()
+
+    # 3) Launch Chromium
+    os.environ["DISPLAY"] = ":0"
+    chrome_args = [
+        "chromium-browser",
+        "--kiosk",
+        "--no-first-run",
+        "--disable-gpu",
+        "--autoplay-policy=no-user-gesture-required",
+        "--allow-insecure-localhost",
+        "--disable-infobars",
+        "--use-fake-ui-for-media-stream",
+        "--disable-session-crashed-bubble"
+        "--unsafely-treat-insecure-origin-as-secure=http://localhost:3000",
+        f"http://localhost:{HTTP_PORT}"
+    ]
+    chromium_process = subprocess.Popen(chrome_args)
+    print("Chromium launched...")
+
+    # 4) WebSocket server in the main thread / event loop
+    loop = asyncio.get_event_loop()
+    main_loop = loop  # store it in global variable so broadcast_message can use it
+
+    ws_server = websockets.serve(handler, "0.0.0.0", WS_PORT)
+    loop.run_until_complete(ws_server)
+    print(f"WebSocket server running on port {WS_PORT}...")
 
     try:
-        # Start Flask server
-        print(f"Server is running on http://localhost:{PORT}")
-        app.run(host="0.0.0.0", port=PORT)
+        loop.run_forever()
     except KeyboardInterrupt:
         print("Shutting down...")
     finally:
         led.off()
-        # If Chromium is still running, terminate it
-        if chromium_process is not None:
+        if chromium_process:
             chromium_process.terminate()
+
+
+# Attach button callback and run
+button.when_pressed = on_button_press
+
+if __name__ == "__main__":
+    main()

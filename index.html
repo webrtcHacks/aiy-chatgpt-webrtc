@@ -2,79 +2,114 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Realtime Chat</title>
+  <title>Realtime Chat w/ websockets</title>
 </head>
 <body>
-<h1>Realtime Chat with GPT-4</h1>
-<p>Ensure your microphone is enabled to start a session.</p>
-<script>
-  async function init() {
-    try {
-      // Get an ephemeral key from your server
-      const tokenResponse = await fetch("/session");
-      const data = await tokenResponse.json();
-      const EPHEMERAL_KEY = data.client_secret.value;
+  <h1>Realtime Chat with GPT-4</h1>
+  <p>Press the physical button to start/end a session.</p>
 
-      // Create a peer connection
-      const pc = new RTCPeerConnection();
+  <script>
+    let ws;
+    let pc;
+    let localTrack;
 
-      // Set up to play remote audio from the model
-      const audioEl = document.createElement("audio");
-      audioEl.autoplay = true;
-      document.body.appendChild(audioEl);
-      pc.ontrack = e => audioEl.srcObject = e.streams[0];
-
-      // Add local audio track for microphone input in the browser
-      const ms = await navigator.mediaDevices.getUserMedia({
-        audio: true
-      });
-      pc.addTrack(ms.getTracks()[0]);
-
-      // Set up data channel for sending and receiving events
-      const dc = pc.createDataChannel("oai-events");
-      dc.addEventListener("message", (e) => {
-        // Realtime server events appear here!
-        console.log("Message from server:", e.data);
-      });
-
-      // Start the session using the Session Description Protocol (SDP)
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      const baseUrl = "https://api.openai.com/v1/realtime";
-      const model = "gpt-4o-realtime-preview-2024-12-17";
-      const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
-        method: "POST",
-        body: offer.sdp,
-        headers: {
-          Authorization: `Bearer ${EPHEMERAL_KEY}`,
-          "Content-Type": "application/sdp",
-        },
-      });
-
-      if (!sdpResponse.ok) {
-        throw new Error("Failed to fetch SDP answer");
-      }
-
-      const answer = {
-        type: "answer",
-        sdp: await sdpResponse.text(),
+    function initWebSocket() {
+      ws = new WebSocket(`ws://${window.location.hostname}:3001`);
+      ws.onopen = () => {
+        console.log("WebSocket connected to server");
+        ws.send(JSON.stringify({ type: "page_loaded" }));
       };
-      await pc.setRemoteDescription(answer);
-
-      // ToDo: debug - initial response audio is missed unless this is here
-      //  - I tried adding a delay; telling chatGPT to wait 2 seconds doesn't work
-      const startedSound = new Audio("CrashMacII.wav");  // source: https://en.wikipedia.org/wiki/File:MacStartupChime.ogg
-      await startedSound.play();
-
-      console.log("Realtime session initialized successfully!");
-    } catch (error) {
-      console.error("Error during initialization:", error);
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "start_session") {
+          console.log("Received start_session from server");
+          startSession(msg.ephemeralKey);
+        } else if (msg.type === "end_session") {
+          console.log("Received end_session from server");
+          endSession();
+        } else {
+          console.log("Unknown message:", msg);
+        }
+      };
+      ws.onerror = (err) => {
+        console.error("WebSocket error:", err);
+      };
+      ws.onclose = () => {
+        console.log("WebSocket closed");
+      };
     }
-  }
 
-  init();
-</script>
+    async function startSession(ephemeralKey) {
+      try {
+        // Create PeerConnection
+        pc = new RTCPeerConnection();
+
+        // Remote audio
+        const audioEl = document.createElement("audio");
+        audioEl.autoplay = true;
+        document.body.appendChild(audioEl);
+        pc.ontrack = (e) => {
+          audioEl.srcObject = e.streams[0];
+        };
+
+        // Local mic
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localTrack = stream.getTracks()[0];
+        pc.addTrack(localTrack);
+
+        // Data channel
+        const dc = pc.createDataChannel("oai-events");
+        dc.addEventListener("message", (e) => {
+          console.log("Message from GPT server:", e.data);
+        });
+
+        // Offer/Answer with OpenAI
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        const baseUrl = "https://api.openai.com/v1/realtime";
+        const model = "gpt-4o-realtime-preview-2024-12-17";
+        const sdpResp = await fetch(`${baseUrl}?model=${model}`, {
+          method: "POST",
+          body: offer.sdp,
+          headers: {
+            Authorization: `Bearer ${ephemeralKey}`,
+            "Content-Type": "application/sdp"
+          },
+        });
+        if (!sdpResp.ok) {
+          throw new Error("Failed to fetch SDP answer from OpenAI");
+        }
+        const answer = { type: "answer", sdp: await sdpResp.text() };
+        await pc.setRemoteDescription(answer);
+
+        // Optional chime
+        const startedSound = new Audio("Chord2_Rev.wav");
+        await startedSound.play();
+
+        console.log("Realtime session started!");
+      } catch (err) {
+        console.error("Error starting session:", err);
+      }
+    }
+
+    function endSession() {
+      console.log("Ending session...");
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      if (localTrack) {
+        localTrack.stop();
+        localTrack = null;
+      }
+      console.log("Session ended (client side).");
+    }
+
+    // Initialize
+    window.addEventListener("load", () => {
+      initWebSocket();
+    });
+  </script>
 </body>
 </html>
