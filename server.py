@@ -21,7 +21,7 @@ BUTTON_PIN = 23
 led = PWMLED(LED_PIN)
 button = Button(BUTTON_PIN)
 
-led_mode = "off"  # "blinking" or "pulsing"
+led_mode = "waiting"  # Start with LED in "waiting" state
 session_active = False
 
 connected_clients = set()
@@ -39,23 +39,30 @@ if not OPENAI_API_KEY:
 def run_led():
     global led_mode
     while True:
-        if led_mode == "blinking":
+        if led_mode == "waiting":
             led.on()
             sleep(1)
-            if led_mode != "blinking":
+            if led_mode != "waiting":
                 continue
             led.off()
             sleep(1)
-        elif led_mode == "pulsing":
+        elif led_mode == "error":
+            led.on()
+            sleep(0.5)
+            if led_mode != "error":
+                continue
+            led.off()
+            sleep(0.5)
+        elif led_mode == "active":
             for brightness in range(0, 101, 5):
-                if led_mode != "pulsing":
+                if led_mode != "active":
                     break
                 led.value = brightness / 100.0
                 sleep(0.05)
-            if led_mode != "pulsing":
+            if led_mode != "active":
                 continue
             for brightness in range(100, -1, -5):
-                if led_mode != "pulsing":
+                if led_mode != "active":
                     break
                 led.value = brightness / 100.0
                 sleep(0.05)
@@ -87,7 +94,7 @@ def on_button_press():
     else:
         # End session
         session_active = False
-        led_mode = "blinking"
+        led_mode = "waiting"
         broadcast_message({
             "type": "end_session"
         })
@@ -125,6 +132,7 @@ def fetch_ephemeral_key():
         return data["client_secret"]["value"]
     except Exception as e:
         print("Error fetching ephemeral key:", e)
+        led_mode = "error"
         return None
 
 
@@ -149,7 +157,10 @@ async def _async_broadcast(text_data):
     Actually broadcast the message to each connected WebSocket.
     Must run in the main event loop context.
     """
+    global led_mode
+
     if not connected_clients:
+        led_mode = "error"
         return
     to_remove = []
     for ws in connected_clients:
@@ -158,6 +169,7 @@ async def _async_broadcast(text_data):
                 await ws.send(text_data)
             except Exception as e:
                 print("Error sending to client:", e)
+                led_mode = "error"
                 to_remove.append(ws)
         else:
             to_remove.append(ws)
@@ -176,8 +188,8 @@ async def handler(websocket, path):
         async for message in websocket:
             data = json.loads(message)
             if data.get("type") == "page_loaded":
-                print("Page loaded – start LED")
-                led_mode = "blinking"  # or whatever you want
+                print("Page loaded")
+                led_mode = "waiting"
     finally:
         connected_clients.discard(websocket)
         print(f"Client {websocket.remote_address} disconnected.")
@@ -189,6 +201,8 @@ async def handler(websocket, path):
 def start_http_server():
     import http.server
     import socketserver
+
+    global led_mode
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def translate_path(self, path):
@@ -202,6 +216,9 @@ def start_http_server():
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        print("HTTP server error:", e)
+        led_mode = "error"
     finally:
         httpd.server_close()  # Ensures port is freed on exit
 
@@ -211,6 +228,7 @@ def start_http_server():
 #######################################
 def main():
     global main_loop
+    global led_mode
 
     # 1) Start LED thread
     led_thread = threading.Thread(target=run_led, daemon=True)
@@ -251,6 +269,10 @@ def main():
         loop.run_forever()
     except KeyboardInterrupt:
         print("Shutting down...")
+        pass
+    except Exception as e:
+        print("Main loop error:", e)
+        led_mode = "error"
     finally:
         led.off()
         if chromium_process:
