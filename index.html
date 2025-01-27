@@ -12,6 +12,7 @@
     let ws;
     let pc;
     let localTrack;
+    let dc;           // only use the first opened data channel (because there are 2)
 
     function initWebSocket() {
       ws = new WebSocket(`ws://${window.location.hostname}:3001`);
@@ -19,14 +20,19 @@
         console.log("WebSocket connected to server");
         ws.send(JSON.stringify({ type: "page_loaded" }));
       };
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
         if (msg.type === "start_session") {
           console.log("Received start_session from server");
-          startSession(msg.ephemeralKey);
+          if(msg.ephemeralKey)
+            await startSession(msg.ephemeralKey);
+            else {
+              console.error("No ephemeral key received from server");
+              // ToDo: send error message to server
+            }
         } else if (msg.type === "end_session") {
           console.log("Received end_session from server");
-          endSession();
+          await endSession();
         } else {
           console.log("Unknown message:", msg);
         }
@@ -57,8 +63,9 @@
         localTrack = stream.getTracks()[0];
         pc.addTrack(localTrack);
 
-        // Data channel
-        const dc = pc.createDataChannel("oai-events");
+        // Data channel - only open once
+        if(!dc)
+          dc = pc.createDataChannel("oai-events");
         dc.addEventListener("message", (e) => {
           console.info("Message from GPT server:", e.data);
         });
@@ -117,7 +124,20 @@
       }
     }
 
-    function endSession() {
+    async function endSession() {
+      const message = {
+            "event_id": "event_234",
+            "type": "response.create",
+            "response": {
+            "modalities": ["text", "audio"],
+                "instructions": "Input is ending until the user pressed the button again. " +
+                        "Give a quick response to this.",
+                "temperature": 0.6,
+                "max_output_tokens": 1024
+            }
+          }
+      dc.send(JSON.stringify(message));
+      await new Promise((resolve) => setTimeout(resolve, 5000));
       console.log("Ending session...");
       if (pc) {
         pc.close();
