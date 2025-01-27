@@ -77,7 +77,7 @@ def on_button_press():
     if not session_active:
         # Start session
         session_active = True
-        led_mode = "pulsing"
+        led_mode = "active"
         ephemeral_key = fetch_ephemeral_key()
         broadcast_message({
             "type": "start_session",
@@ -98,6 +98,10 @@ def on_button_press():
 # Fetch Ephemeral Key from OpenAI
 #######################################
 def fetch_ephemeral_key():
+    global led_mode
+    instructions = ("You are a friendly assistant to a 13-year old named Neev. "
+                    "Use gen-Alpha language occasionally, but mostly be professional and helpful. ")
+
     try:
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -107,11 +111,7 @@ def fetch_ephemeral_key():
             "model": "gpt-4o-realtime-preview-2024-12-17",
             "voice": "alloy",
             "input_audio_transcription": {"model": "whisper-1"},
-            "instructions": (
-                "You are a friendly assistant to a 13-year old named Neev. "
-                "Use gen-Alpha language occasionally, but mostly be professional and helpful. "
-                "Start every new session with a brief pause and a greeting."
-            ),
+            "instructions": instructions,
         }
         resp = requests.post(
             "https://api.openai.com/v1/realtime/sessions",
@@ -224,14 +224,15 @@ def main():
     os.environ["DISPLAY"] = ":0"
     chrome_args = [
         "chromium-browser",
-        "--kiosk",
+        # "--kiosk",
         "--no-first-run",
         "--disable-gpu",
         "--autoplay-policy=no-user-gesture-required",
         "--allow-insecure-localhost",
         "--disable-infobars",
         "--use-fake-ui-for-media-stream",
-        "--disable-session-crashed-bubble"
+        "--disable-session-crashed-bubble",
+        "--auto-open-devtools-for-tabs",
         "--unsafely-treat-insecure-origin-as-secure=http://localhost:3000",
         f"http://localhost:{HTTP_PORT}"
     ]

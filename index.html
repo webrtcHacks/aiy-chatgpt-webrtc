@@ -60,8 +60,29 @@
         // Data channel
         const dc = pc.createDataChannel("oai-events");
         dc.addEventListener("message", (e) => {
-          console.log("Message from GPT server:", e.data);
+          console.info("Message from GPT server:", e.data);
         });
+
+        dc.onopen = () => {
+          // wait 5 seconds before sending the first message
+          // await new Promise((resolve) => setTimeout(resolve, 5000));
+
+          const open_instructions = "Greet Neev by name, occasionally using a gen-Alpha style.";
+
+          const message = {
+            "event_id": "event_234",
+            "type": "response.create",
+            "response": {
+            "modalities": ["text", "audio"],
+                "instructions": open_instructions,
+                "temperature": 0.8,
+                "max_output_tokens": 1024
+            }
+          }
+          dc.send(JSON.stringify(message));
+          console.log("Sent message to GPT server:", message);
+        };
+
 
         // Offer/Answer with OpenAI
         const offer = await pc.createOffer();
@@ -88,6 +109,9 @@
         await startedSound.play();
 
         console.log("Realtime session started!");
+
+        window.send = dc.send;
+
       } catch (err) {
         console.error("Error starting session:", err);
       }
