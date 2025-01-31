@@ -8,6 +8,8 @@ import asyncio
 import websockets
 import json
 import subprocess
+import http.server
+import socketserver
 
 #######################################
 # Configuration and Global State
@@ -117,6 +119,7 @@ def fetch_ephemeral_key():
         payload = {
             "model": "gpt-4o-realtime-preview-2024-12-17",
             "voice": "alloy",
+            "input_audio_format": "pcm16",  # Supported values are: 'pcm16', 'g711_ulaw', and 'g711_alaw'
             "input_audio_transcription": {"model": "whisper-1"},
             "instructions": instructions,
         }
@@ -198,19 +201,20 @@ async def handler(websocket, path):
 #######################################
 # Simple HTTP Server on port 3000
 #######################################
+class ShutdownHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/powerdown":
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"Powering down system...")
+            # os.system("sudo shutdown now")
+        else:
+            super().do_GET()
+
 def start_http_server():
-    import http.server
-    import socketserver
-
     global led_mode
-
-    class Handler(http.server.SimpleHTTPRequestHandler):
-        def translate_path(self, path):
-            if path == "/":
-                path = "/index.html"
-            return os.getcwd() + path
-
-    httpd = socketserver.TCPServer(("", HTTP_PORT), Handler)
+    httpd = socketserver.TCPServer(("", HTTP_PORT), ShutdownHandler)
     print(f"HTTP server serving at port {HTTP_PORT}")
     try:
         httpd.serve_forever()
@@ -221,6 +225,7 @@ def start_http_server():
         led_mode = "error"
     finally:
         httpd.server_close()  # Ensures port is freed on exit
+
 
 
 #######################################
@@ -242,7 +247,6 @@ def main():
     os.environ["DISPLAY"] = ":0"
     chrome_args = [
         "chromium-browser",
-        # "--kiosk",
         "--no-first-run",
         "--disable-gpu",
         "--autoplay-policy=no-user-gesture-required",
@@ -250,12 +254,18 @@ def main():
         "--disable-infobars",
         "--use-fake-ui-for-media-stream",
         "--disable-session-crashed-bubble",
-        "--auto-open-devtools-for-tabs",
         "--unsafely-treat-insecure-origin-as-secure=http://localhost:3000",
+        # debugging
+        # "--kiosk",    # turn off for debugging
+        "--auto-open-devtools-for-tabs",
+        "--enable-logging"
+        f"--log-file={os.path.expanduser('~/chromium.log')}",
+        "--v=1",
         f"http://localhost:{HTTP_PORT}"
     ]
-    chromium_process = subprocess.Popen(chrome_args)
-    print("Chromium launched...")
+    with open(os.path.expanduser('~/chromium_output.log'), 'w') as output_file:
+        chromium_process = subprocess.Popen(chrome_args, stdout=output_file, stderr=output_file)
+        print("Chromium launched...")
 
     # 4) WebSocket server in the main thread / event loop
     loop = asyncio.get_event_loop()
