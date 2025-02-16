@@ -36,7 +36,7 @@
     }
 
     function initWebSocket() {
-        ws = new WebSocket(`ws://${window.location.hostname}:3001`);
+        const ws = new WebSocket('ws://' + window.location.host + '/ws');
         ws.onopen = () => {
             console.log("WebSocket connected to server");
             ws.send(JSON.stringify({type: "page_loaded"}));
@@ -114,6 +114,15 @@
                         if (itemId) {
                             assistantResults[itemId] = finalTranscript; // Update with final result
                             appendOrUpdateLog(`Assistant: ${finalTranscript}`, "agent-message", itemId);
+                        }
+                    } else if (serverMsg.type === "response.function_call_arguments.done") {
+                        const {name, arguments} = serverMsg;
+                        if (name === "confirm_action") {
+                            console.log("User confirmed power down");
+                            ws.send(JSON.stringify({type: "power_down"}));
+                            // Power down the system
+                            endSession();
+
                         }
                     }
                 });
