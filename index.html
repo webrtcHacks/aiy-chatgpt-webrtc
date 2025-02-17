@@ -1,192 +1,222 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Realtime Chat w/ websockets</title>
+  <meta charset="UTF-8">
+  <title>chatGPT Realtime Chat</title>
+  <style>
+    /* Log container styling */
+    #log {
+      border: 1px solid #ccc;
+      padding: 10px;
+      margin-top: 10px;
+      height: 300px;
+      overflow-y: auto;
+      background: #f9f9f9;
+      display: flex;
+      flex-direction: column;
+    }
+    .log-message {
+      margin-bottom: 5px;
+    }
+    /* Input area styles as part of the log container */
+    #inputContainer {
+      margin-top: auto; /* push input area to the bottom */
+      display: flex;
+      align-items: center;
+    }
+    #textInput {
+      flex: 1;
+      padding: 8px;
+      margin-right: 4px;
+    }
+    #sendButton {
+      padding: 8px;
+    }
+  </style>
 </head>
 <body>
-<h1>Realtime Chat with GPT-4</h1>
-<p>Press the physical button to start/end a session.</p>
-<div id="log"></div>
+  <h1>Chat with GPT-4 Realtime and WebRTC</h1>
+  <p>Press the physical button to start/end a session.</p>
 
-<script>
+  <!-- Single container for both log messages and the input area -->
+  <div id="log">
+    <!-- The input area is inserted as the last element in the log container -->
+    <div id="inputContainer">
+      <input id="textInput" type="text" placeholder="Type your message here">
+      <button id="sendButton" onclick="sendText()">Send</button>
+    </div>
+  </div>
+
+  <script>
     let ws;
     let pc;
     let localTrack;
-    let dc;           // only use the first opened data channel (because there are 2)
+    let dc;  // Only use the first opened data channel (because there are 2)
     const logContainer = document.getElementById("log");
+    const inputContainer = document.getElementById("inputContainer");
     const assistantResults = {}; // To track interim results by message ID
 
-
+    // Append new log entries above the input area
     function appendOrUpdateLog(message, className = "", messageId = null) {
-        let logEntry;
-        if (messageId && document.getElementById(messageId)) {
-            // Update existing log entry
-            logEntry = document.getElementById(messageId);
-            logEntry.textContent = message;
-        } else {
-            // Create a new log entry
-            logEntry = document.createElement("div");
-            logEntry.textContent = message;
-            if (className) logEntry.classList.add(className);
-            if (messageId) logEntry.id = messageId; // Set unique ID if provided
-            logContainer.appendChild(logEntry);
-        }
-        logContainer.scrollTop = logContainer.scrollHeight; // Auto-scroll to the bottom
+      let logEntry;
+      if (messageId && document.getElementById(messageId)) {
+        // Update existing log entry
+        logEntry = document.getElementById(messageId);
+        logEntry.textContent = message;
+      } else {
+        // Create a new log entry
+        logEntry = document.createElement("div");
+        logEntry.textContent = message;
+        logEntry.classList.add("log-message");
+        if (className) logEntry.classList.add(className);
+        if (messageId) logEntry.id = messageId;
+        // Insert the log entry before the input container so that the input stays at the bottom.
+        logContainer.insertBefore(logEntry, inputContainer);
+      }
+      // Auto-scroll to the bottom
+      logContainer.scrollTop = logContainer.scrollHeight;
     }
 
     function initWebSocket() {
-        const ws = new WebSocket('ws://' + window.location.host + '/ws');
-        ws.onopen = () => {
-            console.log("WebSocket connected to server");
-            ws.send(JSON.stringify({type: "page_loaded"}));
-        };
-        ws.onmessage = async (event) => {
-            const msg = JSON.parse(event.data);
-            if (msg.type === "start_session") {
-                console.log("Received start_session from server");
-                appendOrUpdateLog("Session started.", "system-message");
-                if (msg["ephemeralKey"]) {
-                    await startSession(msg["ephemeralKey"]);
-                } else {
-                    console.error("No ephemeral key received from server");
-                    appendOrUpdateLog("Error: No ephemeral key received from server.", "system-message");
-                }
-            } else if (msg.type === "end_session") {
-                console.log("Received end_session from server");
-                appendOrUpdateLog("Session ended by the user.", "system-message");
-                await endSession();
-            } else {
-                console.log("Unknown message:", msg);
-            }
-        };
-        ws.onerror = (err) => {
-            console.error("WebSocket error:", err);
-        };
-        ws.onclose = () => {
-            console.log("WebSocket closed");
-        };
+      ws = new WebSocket('ws://' + window.location.host + '/ws');
+      ws.onopen = () => {
+        console.log("WebSocket connected to server");
+        ws.send(JSON.stringify({ type: "page_loaded" }));
+      };
+      ws.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "start_session") {
+          console.log("Received start_session from server");
+          appendOrUpdateLog("Session started.", "system-message");
+          if (msg["ephemeralKey"]) {
+            await startSession(msg["ephemeralKey"]);
+          } else {
+            console.error("No ephemeral key received from server");
+            appendOrUpdateLog("Error: No ephemeral key received from server.", "system-message");
+          }
+        } else if (msg.type === "end_session") {
+          console.log("Received end_session from server");
+          appendOrUpdateLog("Session ended by the user.", "system-message");
+          await endSession();
+        } else {
+          console.log("Unknown message:", msg);
+        }
+      };
+      ws.onerror = (err) => {
+        console.error("WebSocket error:", err);
+      };
+      ws.onclose = () => {
+        console.log("WebSocket closed");
+      };
     }
 
     async function startSession(ephemeralKey) {
-        try {
-            // Create PeerConnection
-            pc = new RTCPeerConnection();
+      try {
+        // Create PeerConnection
+        pc = new RTCPeerConnection();
 
-            // Remote audio
-            const audioEl = document.createElement("audio");
-            audioEl.autoplay = true;
-            document.body.appendChild(audioEl);
-            pc.ontrack = (e) => {
-                audioEl.srcObject = e.streams[0];
-            };
+        // Remote audio element
+        const audioEl = document.createElement("audio");
+        audioEl.autoplay = true;
+        document.body.appendChild(audioEl);
+        pc.ontrack = (e) => {
+          audioEl.srcObject = e.streams[0];
+        };
 
-            // Local mic
-            const stream = await navigator.mediaDevices.getUserMedia({audio: true});
-            localTrack = stream.getTracks()[0];
-            pc.addTrack(localTrack);
+        // Local microphone stream
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localTrack = stream.getTracks()[0];
+        pc.addTrack(localTrack);
 
-            // Data channel - only open once
-            if (!dc) {
-                dc = pc.createDataChannel("oai-events");
-                dc.addEventListener("message", (e) => {
-                    const serverMsg = JSON.parse(e.data);
-                    console.info("Message from GPT server:", serverMsg);
+        // Data channel: only open once
+        if (!dc) {
+          dc = pc.createDataChannel("oai-events");
+          dc.addEventListener("message", (e) => {
+            const serverMsg = JSON.parse(e.data);
+            console.info("Message from GPT server:", serverMsg);
 
-                    if (serverMsg.type === "conversation.item.input_audio_transcription.completed") {
-                        const content = serverMsg.transcript;
-                        if(content) {
-                            appendOrUpdateLog(`User: ${content}`, "user-message");
-                        }
-                    } else if (serverMsg.type === "response.audio_transcript.delta") {
-                        // Update interim transcript
-                        const delta = serverMsg.delta;
-                        const itemId = serverMsg.item_id;
-                        if (itemId) {
-                            assistantResults[itemId] = assistantResults[itemId] || "";
-                            assistantResults[itemId] += delta; // Accumulate interim results
-                            appendOrUpdateLog(`Assistant (interim): ${assistantResults[itemId]}`, "interim-result", itemId);
-                        }
-                    } else if (serverMsg.type === "response.audio_transcript.done") {
-                        // Replace interim with final transcript
-                        const finalTranscript = serverMsg.transcript;
-                        const itemId = serverMsg.item_id;
-                        if (itemId) {
-                            assistantResults[itemId] = finalTranscript; // Update with final result
-                            appendOrUpdateLog(`Assistant: ${finalTranscript}`, "agent-message", itemId);
-                        }
-                    } else if (serverMsg.type === "response.function_call_arguments.done") {
-                        const {name, arguments} = serverMsg;
-                        if (name === "confirm_action") {
-                            console.log("User confirmed power down");
-                            ws.send(JSON.stringify({type: "power_down"}));
-                            // Power down the system
-                            endSession();
-
-                        }
-                    }
-                });
+            if (serverMsg.type === "conversation.item.input_audio_transcription.completed") {
+              const content = serverMsg.transcript;
+              if(content) {
+                appendOrUpdateLog(`User: ${content}`, "user-message");
+              }
+            } else if (serverMsg.type === "response.audio_transcript.delta") {
+              // Update interim transcript
+              const delta = serverMsg.delta;
+              const itemId = serverMsg.item_id;
+              if (itemId) {
+                assistantResults[itemId] = assistantResults[itemId] || "";
+                assistantResults[itemId] += delta;
+                appendOrUpdateLog(`Assistant (interim): ${assistantResults[itemId]}`, "interim-result", itemId);
+              }
+            } else if (serverMsg.type === "response.audio_transcript.done") {
+              // Replace interim with final transcript
+              const finalTranscript = serverMsg.transcript;
+              const itemId = serverMsg.item_id;
+              if (itemId) {
+                assistantResults[itemId] = finalTranscript;
+                appendOrUpdateLog(`Assistant: ${finalTranscript}`, "agent-message", itemId);
+              }
+            } else if (serverMsg.type === "response.function_call_arguments.done") {
+              const { name, arguments } = serverMsg;
+              if (name === "confirm_action") {
+                console.log("User confirmed power down");
+                ws.send(JSON.stringify({ type: "power_down" }));
+                endSession();
+              }
             }
-
-            dc.onopen = () => {
-
-                const start_instructions = "Greet Neev by name, occasionally using a gen-Alpha style.";
-
-                const message = {
-                    "event_id": "event_234",
-                    "type": "response.create",
-                    "response": {
-                        "modalities": ["text", "audio"],
-                        "instructions": start_instructions,
-                        "temperature": 0.8,
-                        "max_output_tokens": 500
-                    }
-                }
-                dc.send(JSON.stringify(message));
-                console.log("Sent message to GPT server:", message);
-            };
-
-
-            // Offer/Answer with OpenAI
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-
-            const baseUrl = "https://api.openai.com/v1/realtime";
-            const model = "gpt-4o-realtime-preview-2024-12-17";
-            const sdpResp = await fetch(`${baseUrl}?model=${model}`, {
-                method: "POST",
-                body: offer.sdp,
-                headers: {
-                    Authorization: `Bearer ${ephemeralKey}`,
-                    "Content-Type": "application/sdp"
-                },
-            });
-            if (!sdpResp.ok) {
-                console.error(new Error("Failed to fetch SDP answer from OpenAI"));
-            }
-            const answer = {type: "answer", sdp: await sdpResp.text()};
-            await pc.setRemoteDescription(answer);
-
-            // Optional chime
-            const startedSound = new Audio("Chord2_Rev.wav");
-            await startedSound.play();
-
-            console.log("Realtime session started!");
-
-            window.send = dc.send;
-
-        } catch (err) {
-            console.error("Error starting session:", err);
+          });
         }
+
+        dc.onopen = () => {
+          const start_instructions = "Greet Neev by name, occasionally using a gen-Alpha style.";
+          const message = {
+            "type": "response.create",
+            "response": {
+              "modalities": ["text", "audio"],
+              "instructions": start_instructions,
+              "temperature": 0.8,
+              "max_output_tokens": 500
+            }
+          };
+          dc.send(JSON.stringify(message));
+          console.log("Sent message to GPT server:", message);
+        };
+
+        // Create and send offer to OpenAI
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        const baseUrl = "https://api.openai.com/v1/realtime";
+        const model = "gpt-4o-realtime-preview-2024-12-17";
+        const sdpResp = await fetch(`${baseUrl}?model=${model}`, {
+          method: "POST",
+          body: offer.sdp,
+          headers: {
+            Authorization: `Bearer ${ephemeralKey}`,
+            "Content-Type": "application/sdp"
+          },
+        });
+        if (!sdpResp.ok) {
+          console.error(new Error("Failed to fetch SDP answer from OpenAI"));
+        }
+        const answer = { type: "answer", sdp: await sdpResp.text() };
+        await pc.setRemoteDescription(answer);
+
+        // Optional chime
+        const startedSound = new Audio("Chord2_Rev.wav");
+        await startedSound.play();
+
+        console.log("Realtime session started!");
+        window.send = dc.send;
+      } catch (err) {
+        console.error("Error starting session:", err);
+      }
     }
 
     async function endSession() {
-      // Send a message to the GPT server for a goodbye message
-      // if that doesn't work, end the session after a timeout
-
-      // Wait 12 seconds before ending the session
-      setTimeout(() => endSessionClientSide(), 12_000);
-
+      // Schedule session end after 12 seconds
+      setTimeout(() => endSessionClientSide(), 12000);
       function endSessionClientSide() {
         console.log("Ending session...");
         if (pc) {
@@ -201,23 +231,20 @@
       }
 
       const message = {
-        "event_id": "event_234",
         "type": "response.create",
         "response": {
           "modalities": ["text", "audio"],
           "instructions": "Input is ending until the user presses the button again. " +
-                  "Give a quick good-bye. " +
-                  "Sometimes remind the user to press the button to start a new session.",
+                          "Give a quick good-bye. " +
+                          "Sometimes remind the user to press the button to start a new session.",
           "temperature": 0.6,
           "max_output_tokens": 500
         }
-      }
+      };
       dc.send(JSON.stringify(message));
 
-      // ToDo: could make this more complex and look for the event ID of the sent message too
       dc.addEventListener("message", (e) => {
         const serverMsg = JSON.parse(e.data);
-
         if (serverMsg.type === "output_audio_buffer.audio_stopped") {
           console.log("Final audio stopped");
           endSessionClientSide();
@@ -225,10 +252,33 @@
       });
     }
 
-    // Initialize
+    // Send text messages from the input field as a new log entry
+    function sendText() {
+      const textInput = document.getElementById("textInput");
+      const text = textInput.value.trim();
+      if (!text) return;
+      if (dc && dc.readyState === "open") {
+        const message = {
+          type: "response.create",
+          response: {
+            modalities: ["text", "audio"],
+            instructions: text,
+            temperature: 0.8,
+            max_output_tokens: 500
+          }
+        };
+        dc.send(JSON.stringify(message));
+        appendOrUpdateLog("User (text): " + text, "user-message");
+        textInput.value = "";
+      } else {
+        appendOrUpdateLog("Data channel not open. Please wait until session starts.", "system-message");
+      }
+    }
+
+    // Initialize WebSocket when the window loads
     window.addEventListener("load", () => {
       initWebSocket();
     });
-</script>
+  </script>
 </body>
 </html>
