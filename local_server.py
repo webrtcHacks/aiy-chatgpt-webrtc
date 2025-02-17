@@ -102,6 +102,7 @@ async def index_handler(request):
 
 
 async def websocket_handler(request):
+    global session_active
     """Handle WebSocket connections."""
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -118,7 +119,14 @@ async def websocket_handler(request):
                     if data.get("type") == "page_loaded":
                         print("Page loaded")
                     elif data.get("type") == "power_down":
-                        print("Powering down..")
+                        print("User asked to power down..")
+                        session_active = False
+                        # os.system("sudo shutdown now")
+                    elif data.get("type") == "end_session":
+                        print("User asked to end session..")
+                        session_active = False
+                    else:
+                        print("Received unknown message:", data)
                 except json.JSONDecodeError:
                     print("Received non-JSON message:", msg.data)
             elif msg.type == WSMsgType.ERROR:
