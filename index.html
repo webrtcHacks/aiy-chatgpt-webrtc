@@ -43,7 +43,33 @@
             border: 1px solid #555;
         }
 
-        #sendButton {
+        Button {
+            padding: 8px;
+            background: #555;
+            color: #f9f9f9;
+            border: 1px solid #666;
+        }
+
+        /* Settings form styling */
+        #settingsForm {
+            display: none;
+            margin-top: 10px;
+            padding: 10px;
+            border: 1px solid #444;
+            background: #333;
+        }
+
+        #settingsForm input {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            background: #444;
+            color: #f9f9f9;
+            border: 1px solid #555;
+            box-sizing: border-box; /* Ensure padding and border are included in the element's total width */
+        }
+
+        #settingsForm button {
             padding: 8px;
             background: #555;
             color: #f9f9f9;
@@ -55,10 +81,31 @@
 <h1>Chat with GPT-4 Realtime and WebRTC</h1>
 <p>Press the physical button to start/end a session.</p>
 
+<!-- Settings button -->
+<button id="settingsButton">⚙️ Settings</button>
+
+<!-- Settings form -->
+<div id="settingsForm">
+    <label for="temperature">Temperature: </label>
+    <input id="temperature" type="number" step="0.1" min="0" max="1" placeholder="Temperature" value="0.7"
+           style="width: 80px">
+    <br>
+    <label for="sessionInstructions">Session instructions: </label>
+    <input id="sessionInstructions" type="text" placeholder="Session instructions" value="You are a friendly assistant">
+    <br>
+    <label for="startInstructions">Start instructions: </label>
+    <input id="startInstructions" type="text" placeholder="Start instructions"
+           value="Greet the user and ask how you can help">
+    <br>
+    <button onclick="resetSettings()"> 🔄 Reset Settings</button>
+    <span id="autoSaveStatus"></span>
+</div>
+
 <!-- Single container for both log messages and the input area -->
 <div id="log">
     <!-- The input area is inserted as the last element in the log container -->
     <div id="inputContainer">
+        <label for="textInput"></label>
         <input id="textInput" type="text" placeholder="Type your message here">
         <button id="sendButton" onclick="sendText()">Send</button>
     </div>
@@ -72,6 +119,10 @@
     const logContainer = document.getElementById("log");
     const inputContainer = document.getElementById("inputContainer");
     const assistantResults = {}; // To track interim results by message ID
+
+    const defaultSessionInstructions = "You are a friendly assistant";
+    const defaultStartInstructions = "Greet the user and ask how you can help";
+    const defaultTemperature = 0.7;
 
     // Append new log entries above the input area
     function appendOrUpdateLog(message, className = "", messageId = null) {
@@ -93,6 +144,89 @@
         // Auto-scroll to the bottom
         logContainer.scrollTop = logContainer.scrollHeight;
     }
+
+    // Show/hide settings form
+    document.getElementById("settingsButton").addEventListener("click", () => {
+        const settingsForm = document.getElementById("settingsForm");
+        settingsForm.style.display = settingsForm.style.display === "none" ? "block" : "none";
+    });
+
+    // Load settings from localStorage
+    document.getElementById("sessionInstructions").value = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
+    document.getElementById("startInstructions").value = localStorage.getItem("startInstructions") || defaultStartInstructions;
+    document.getElementById("temperature").value = localStorage.getItem("temperature") ||  defaultTemperature;
+
+
+    function autoSaveSettings() {
+        const sessionInstructions = document.getElementById("sessionInstructions").value;
+        const startInstructions = document.getElementById("startInstructions").value;
+        const temperature = document.getElementById("temperature").value;
+        localStorage.setItem("sessionInstructions", sessionInstructions);
+        localStorage.setItem("startInstructions", startInstructions);
+        localStorage.setItem("temperature", temperature);
+        document.getElementById("autoSaveStatus").textContent = "Settings autosaved at " + new Date().toLocaleTimeString();
+    }
+
+    // Add event listeners to input fields to trigger autosave
+    document.getElementById("sessionInstructions").addEventListener("input", () => {
+        clearTimeout(window.autoSaveTimeout);
+        window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
+    });
+
+    document.getElementById("startInstructions").addEventListener("input", () => {
+        clearTimeout(window.autoSaveTimeout);
+        window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
+    });
+
+    document.getElementById("temperature").addEventListener("input", () => {
+        clearTimeout(window.autoSaveTimeout);
+        window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
+    });
+
+    // Save settings to localStorage
+    function resetSettings() {
+        const sessionInstructions = document.getElementById("sessionInstructions").value;
+        const startInstructions = document.getElementById("startInstructions").value;
+        const temperature = document.getElementById("temperature").value;
+        localStorage.setItem("sessionInstructions", sessionInstructions);
+        localStorage.setItem("startInstructions", startInstructions);
+        localStorage.setItem("temperature", temperature);
+        updateSettings();
+        console.log("Settings reset!");
+    }
+
+    function updateSettings() {
+        const sessionInstructions = document.getElementById("sessionInstructions").value;
+        const temperature = document.getElementById("temperature").value;
+        if(dc && dc.readyState === "open") {
+            // Update session instructions
+            const message = {
+                type: "session.update",
+                "session": {
+                    "modalities": ["text", "audio"],
+                    "instructions": sessionInstructions,
+                    "temperature": temperature,
+                    "max_output_tokens": 500
+                }
+            };
+            dc.send(JSON.stringify(message));
+            console.log("Sent message to GPT server:", message);
+        } else {
+            console.log("Data channel not open. Please wait until session starts.");
+        }
+    }
+
+
+    // Load settings from localStorage
+    function loadSettings() {
+        const sessionInstructions = localStorage.getItem("sessionInstructions") || "You are a friendly assistant";
+        const startInstructions = localStorage.getItem("startInstructions") || "Greet the user and ask how you can help";
+        const temperature = localStorage.getItem("temperature") || "0.7";
+        document.getElementById("sessionInstructions").value = sessionInstructions;
+        document.getElementById("startInstructions").value = startInstructions;
+        document.getElementById("temperature").value = temperature;
+    }
+
 
     function initWebSocket() {
         ws = new WebSocket('ws://' + window.location.host + '/ws');
@@ -187,65 +321,64 @@
                         }
                     } else if (serverMsg.type === "response.function_call_arguments.done") {
                         const {name, arguments} = serverMsg;
-                        if(name === "end_session") {
+                        if (name === "end_session") {
                             console.log("User confirmed end session");
                             ws.send(JSON.stringify({type: "end_session"}));
                             // End the session
                             endSession();
-                        } else
-                        if (name === "power_down") {
+                        } else if (name === "power_down") {
                             console.log("User confirmed power down");
                             ws.send(JSON.stringify({type: "power_down"}));
                             // End the session
                             endSession("Tell the user they will need to turn the system back on start a new chat. ");
-
                         }
                     }
                 });
-            }
-            else {
+            } else {
                 console.log("Reusing existing datachannel for message communication", dc);
             }
 
             dc.onopen = () => {
-                const systemMessage =
-                    {
-                        type: "session.update",
-                        session: {
-                            tools: [
-                                {
-                                    type: "function",
-                                    name: "end_session",
-                                    description: "the user would like to stop interacting with the Agent",
-                                    parameters: {},
-                                },
-                                {
-                                    type: "function",
-                                    name: "power_down",
-                                    description: "Triggers a system power-down when the user wants to turn off the computer " +
-                                        "by saying shut down, power off, turn off or similar phrases. " +
-                                        "Always ask for confirmation before executing.",
-                                    parameters: {}
-                                }
-                            ],
-                            tool_choice: "auto",
-                        }
+                const sessionInstructions = localStorage.getItem("sessionInstructions") || "You are a friendly assistant";
+                const startInstructions = localStorage.getItem("startInstructions") || "Greet the user and ask how you can help";
+                const temperature = parseFloat(localStorage.getItem("temperature")) || 0.7;
+
+                const systemMessage = {
+                    type: "session.update",
+                    session: {
+                        instructions: sessionInstructions,
+                        tools: [
+                            {
+                                type: "function",
+                                name: "end_session",
+                                description: "the user would like to stop interacting with the Agent",
+                                parameters: {},
+                            },
+                            {
+                                type: "function",
+                                name: "power_down",
+                                description: "Triggers a system power-down when the user wants to turn off the computer " +
+                                    "by saying shut down, power off, turn off or similar phrases. " +
+                                    "Always ask for confirmation before executing.",
+                                parameters: {}
+                            }
+                        ],
+                        tool_choice: "auto",
                     }
+                };
                 dc.send(JSON.stringify(systemMessage));
 
-
-                const start_instructions = "Greet Neev by name, occasionally using a gen-Alpha style.";
-                const message = {
+                const startMessage = {
                     "type": "response.create",
                     "response": {
                         "modalities": ["text", "audio"],
-                        "instructions": start_instructions,
-                        "temperature": 0.8,
+                        "instructions": startInstructions,
+                        "temperature": temperature,
                         "max_output_tokens": 500
                     }
                 };
-                dc.send(JSON.stringify(message));
-                console.log("Sent message to GPT server:", message);
+                dc.send(JSON.stringify(startMessage));
+                console.log("Sent message to GPT server:", startMessage);
             };
 
             // Create and send offer to OpenAI
@@ -285,8 +418,8 @@
 
         // ToDo: default instructions
         instructions = instructions || "Input is ending until the user presses the button again. " +
-                    "Give a quick good-bye. " +
-                    "Sometimes remind the user to press the button to start a new session."
+            "Give a quick good-bye. " +
+            "Sometimes remind the user to press the button to start a new session."
 
         function endSessionClientSide() {
             console.log("Ending session...");
@@ -353,8 +486,11 @@
 
     // Initialize WebSocket when the window loads
     window.addEventListener("load", () => {
+        loadSettings();
         initWebSocket();
     });
+
+
 </script>
 </body>
 </html>

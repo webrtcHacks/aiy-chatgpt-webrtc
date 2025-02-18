@@ -22,7 +22,7 @@ if not OPENAI_API_KEY:
 
 # --- Preserve the fetch_ephemeral_key Method ---
 def fetch_ephemeral_key():
-    instructions = "You are a friendly assistant to a 13-year old named Neev. Use gen-Alpha occasionally."
+    instructions = "You are a friendly assistant."
     try:
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
