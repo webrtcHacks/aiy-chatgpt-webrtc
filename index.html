@@ -116,20 +116,33 @@
     let pc;
     let localTrack;
     let dc;  // Only use the first opened data channel (because there are 2)
-    const logContainer = document.getElementById("log");
-    const inputContainer = document.getElementById("inputContainer");
     const assistantResults = {}; // To track interim results by message ID
 
     const defaultSessionInstructions = "You are a friendly assistant";
     const defaultStartInstructions = "Greet the user and ask how you can help";
     const defaultTemperature = 0.7;
 
+    // Helper function to get element by ID
+    const $ = (id) => document.getElementById(id);
+
+    // Store elements in variables
+    const sessionInstructionsEl = $("sessionInstructions");
+    const startInstructionsEl = $("startInstructions");
+    const temperatureEl = $("temperature");
+    const autoSaveStatusEl = $("autoSaveStatus");
+    const settingsButtonEl = $("settingsButton");
+    const settingsFormEl = $("settingsForm");
+    const logEl = $("log");
+    const inputContainerEl = $("inputContainer");
+    const textInputEl = $("textInput");
+    const sendButtonEl = $("sendButton");
+
     // Append new log entries above the input area
     function appendOrUpdateLog(message, className = "", messageId = null) {
         let logEntry;
-        if (messageId && document.getElementById(messageId)) {
+        if (messageId && $(messageId)) {
             // Update existing log entry
-            logEntry = document.getElementById(messageId);
+            logEntry = $(messageId);
             logEntry.textContent = message;
         } else {
             // Create a new log entry
@@ -139,74 +152,80 @@
             if (className) logEntry.classList.add(className);
             if (messageId) logEntry.id = messageId;
             // Insert the log entry before the input container so that the input stays at the bottom.
-            logContainer.insertBefore(logEntry, inputContainer);
+            logEl.insertBefore(logEntry, inputContainerEl);
         }
         // Auto-scroll to the bottom
-        logContainer.scrollTop = logContainer.scrollHeight;
+        logEl.scrollTop = logEl.scrollHeight;
     }
 
     // Show/hide settings form
-    document.getElementById("settingsButton").addEventListener("click", () => {
-        const settingsForm = document.getElementById("settingsForm");
-        settingsForm.style.display = settingsForm.style.display === "none" ? "block" : "none";
+    settingsButtonEl.addEventListener("click", () => {
+        settingsFormEl.style.display = settingsFormEl.style.display === "none" ? "block" : "none";
     });
 
     // Load settings from localStorage
-    document.getElementById("sessionInstructions").value = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
-    document.getElementById("startInstructions").value = localStorage.getItem("startInstructions") || defaultStartInstructions;
-    document.getElementById("temperature").value = localStorage.getItem("temperature") ||  defaultTemperature;
+    sessionInstructionsEl.value = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
+    startInstructionsEl.value = localStorage.getItem("startInstructions") || defaultStartInstructions;
+    temperatureEl.value = localStorage.getItem("temperature") || defaultTemperature;
 
-
+    // Function to autosave settings
     function autoSaveSettings() {
-        const sessionInstructions = document.getElementById("sessionInstructions").value;
-        const startInstructions = document.getElementById("startInstructions").value;
-        const temperature = document.getElementById("temperature").value;
-        localStorage.setItem("sessionInstructions", sessionInstructions);
-        localStorage.setItem("startInstructions", startInstructions);
-        localStorage.setItem("temperature", temperature);
-        document.getElementById("autoSaveStatus").textContent = "Settings autosaved at " + new Date().toLocaleTimeString();
+        const settings = {
+            sessionInstructions: sessionInstructionsEl.value,
+            startInstructions: startInstructionsEl.value,
+            temperature: temperatureEl.value
+        };
+        Object.entries(settings).forEach(([key, value]) => localStorage.setItem(key, value));
+        updateSettings();
+        autoSaveStatusEl.textContent = "Settings autosaved at " + new Date().toLocaleTimeString();
     }
 
     // Add event listeners to input fields to trigger autosave
-    document.getElementById("sessionInstructions").addEventListener("input", () => {
-        clearTimeout(window.autoSaveTimeout);
-        window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
-    });
-
-    document.getElementById("startInstructions").addEventListener("input", () => {
-        clearTimeout(window.autoSaveTimeout);
-        window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
-    });
-
-    document.getElementById("temperature").addEventListener("input", () => {
-        clearTimeout(window.autoSaveTimeout);
-        window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
+    [sessionInstructionsEl, startInstructionsEl, temperatureEl].forEach(el => {
+        el.addEventListener("input", () => {
+            clearTimeout(window.autoSaveTimeout);
+            window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
+        });
     });
 
     // Save settings to localStorage
     function resetSettings() {
-        const sessionInstructions = document.getElementById("sessionInstructions").value;
-        const startInstructions = document.getElementById("startInstructions").value;
-        const temperature = document.getElementById("temperature").value;
-        localStorage.setItem("sessionInstructions", sessionInstructions);
-        localStorage.setItem("startInstructions", startInstructions);
-        localStorage.setItem("temperature", temperature);
+        const settings = {
+            sessionInstructions: sessionInstructionsEl.value,
+            startInstructions: startInstructionsEl.value,
+            temperature: temperatureEl.value
+        };
+        Object.entries(settings).forEach(([key, value]) => localStorage.setItem(key, value));
         updateSettings();
         console.log("Settings reset!");
     }
 
     function updateSettings() {
-        const sessionInstructions = document.getElementById("sessionInstructions").value;
-        const temperature = document.getElementById("temperature").value;
-        if(dc && dc.readyState === "open") {
+        const sessionInstructions = sessionInstructionsEl.value;
+        const temperature = temperatureEl.value;
+        if (dc && dc.readyState === "open") {
             // Update session instructions
             const message = {
                 type: "session.update",
-                "session": {
-                    "modalities": ["text", "audio"],
-                    "instructions": sessionInstructions,
-                    "temperature": temperature,
-                    "max_output_tokens": 500
+                session: {
+                    instructions: sessionInstructions,
+                    tools: [
+                        {
+                            type: "function",
+                            name: "end_session",
+                            description: "the user would like to stop interacting with the Agent",
+                            parameters: {},
+                        },
+                        {
+                            type: "function",
+                            name: "power_down",
+                            description: "Triggers a system power-down when the user wants to turn off the computer " +
+                                "by saying shut down, power off, turn off or similar phrases. " +
+                                "Always ask for confirmation before executing.",
+                            parameters: {}
+                        }
+                    ],
+                    tool_choice: "auto",
                 }
             };
             dc.send(JSON.stringify(message));
@@ -216,17 +235,15 @@
         }
     }
 
-
     // Load settings from localStorage
     function loadSettings() {
-        const sessionInstructions = localStorage.getItem("sessionInstructions") || "You are a friendly assistant";
-        const startInstructions = localStorage.getItem("startInstructions") || "Greet the user and ask how you can help";
-        const temperature = localStorage.getItem("temperature") || "0.7";
-        document.getElementById("sessionInstructions").value = sessionInstructions;
-        document.getElementById("startInstructions").value = startInstructions;
-        document.getElementById("temperature").value = temperature;
+        const sessionInstructions = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
+        const startInstructions = localStorage.getItem("startInstructions") || defaultStartInstructions;
+        const temperature = localStorage.getItem("temperature") || defaultTemperature;
+        sessionInstructionsEl.value = sessionInstructions;
+        startInstructionsEl.value = startInstructions;
+        temperatureEl.value = temperature;
     }
-
 
     function initWebSocket() {
         ws = new WebSocket('ws://' + window.location.host + '/ws');
@@ -456,8 +473,7 @@
 
     // Send text messages from the input field as a new log entry
     function sendText() {
-        const textInput = document.getElementById("textInput");
-        const text = textInput.value.trim();
+        const text = textInputEl.value.trim();
         if (!text) return;
         if (dc && dc.readyState === "open") {
             const message = {
@@ -471,14 +487,15 @@
             };
             dc.send(JSON.stringify(message));
             appendOrUpdateLog("User (text): " + text, "user-message");
-            textInput.value = "";
+            textInputEl.value = "";
         } else {
             appendOrUpdateLog("Data channel not open. Please wait until session starts.", "system-message");
         }
     }
+    sendButtonEl.addEventListener("click", sendText);
 
     // Add event listener for Enter key press in textInput
-    document.getElementById("textInput").addEventListener("keydown", (event) => {
+    textInputEl.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
             sendText();
         }
@@ -489,8 +506,6 @@
         loadSettings();
         initWebSocket();
     });
-
-
 </script>
 </body>
 </html>
