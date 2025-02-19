@@ -86,10 +86,27 @@
 
 <!-- Settings form -->
 <div id="settingsForm">
+    <label for="openaiApiKey">OpenAI API Key: </label>
+    <input id="openaiApiKey" type="text" placeholder="OpenAI API Key"
+           value="Your OPENAI_API_KEY from platform.openai.com">
+    <br>
     <label for="temperature">Temperature: </label>
     <input id="temperature" type="number" step="0.1" min="0" max="1" placeholder="Temperature" value="0.7"
-           style="width: 80px">
+           style="width: 60px">
     <br>
+    <label for="voice">Select Voice: </label>
+    <select id="voice">
+        <option value="alloy" selected>Alloy</option>
+        <option value="echo">Echo</option>
+        <option value="shimmer">Shimmer</option>
+        <option value="ash">Ash</option>
+        <option value="ballad">Ballad</option>
+        <option value="coral">Coral</option>
+        <option value="sage">Sage</option>
+        <option value="verse">Verse</option>
+    </select>
+    <br>
+
     <label for="sessionInstructions">Session instructions: </label>
     <input id="sessionInstructions" type="text" placeholder="Session instructions" value="You are a friendly assistant">
     <br>
@@ -103,7 +120,6 @@
 
 <!-- Single container for both log messages and the input area -->
 <div id="log">
-    <!-- The input area is inserted as the last element in the log container -->
     <div id="inputContainer">
         <label for="textInput"></label>
         <input id="textInput" type="text" placeholder="Type your message here">
@@ -117,18 +133,17 @@
     let localTrack;
     let dc;  // Only use the first opened data channel (because there are 2)
     const assistantResults = {}; // To track interim results by message ID
-
-    const defaultSessionInstructions = "You are a friendly assistant";
-    const defaultStartInstructions = "Greet the user and ask how you can help";
-    const defaultTemperature = 0.7;
+    let openaiApiKey;
 
     // Helper function to get element by ID
     const $ = (id) => document.getElementById(id);
 
     // Store elements in variables
+    const keyEl = $("openaiApiKey");
     const sessionInstructionsEl = $("sessionInstructions");
     const startInstructionsEl = $("startInstructions");
     const temperatureEl = $("temperature");
+    const voiceEl = $("voice");
     const autoSaveStatusEl = $("autoSaveStatus");
     const settingsButtonEl = $("settingsButton");
     const settingsFormEl = $("settingsForm");
@@ -136,6 +151,13 @@
     const inputContainerEl = $("inputContainer");
     const textInputEl = $("textInput");
     const sendButtonEl = $("sendButton");
+
+    // Default settings
+    const defaultKey = "Your OPENAI_API_KEY from platform.openai.com";
+    const defaultSessionInstructions = "You are a friendly assistant";
+    const defaultStartInstructions = "Greet the user and ask how you can help";
+    const defaultTemperature = 0.7;
+    const defaultVoice = "alloy";
 
     // Append new log entries above the input area
     function appendOrUpdateLog(message, className = "", messageId = null) {
@@ -164,25 +186,29 @@
     });
 
     // Load settings from localStorage
+    keyEl.value = localStorage.getItem("openaiApiKey") || defaultKey;
     sessionInstructionsEl.value = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
     startInstructionsEl.value = localStorage.getItem("startInstructions") || defaultStartInstructions;
     temperatureEl.value = localStorage.getItem("temperature") || defaultTemperature;
+    voiceEl.value = localStorage.getItem("voice") || defaultVoice;
 
     // Function to autosave settings
     function autoSaveSettings() {
         const settings = {
+            openaiApiKey: keyEl.value,
             sessionInstructions: sessionInstructionsEl.value,
             startInstructions: startInstructionsEl.value,
-            temperature: temperatureEl.value
+            temperature: temperatureEl.value,
+            voice: voiceEl.value
         };
         Object.entries(settings).forEach(([key, value]) => localStorage.setItem(key, value));
-        updateSettings();
+        sendNewSettings();
         autoSaveStatusEl.textContent = "Settings autosaved at " + new Date().toLocaleTimeString();
     }
 
     // Add event listeners to input fields to trigger autosave
-    [sessionInstructionsEl, startInstructionsEl, temperatureEl].forEach(el => {
-        el.addEventListener("input", () => {
+    [keyEl, sessionInstructionsEl, startInstructionsEl, temperatureEl, voiceEl].forEach(el => {
+        el.addEventListener("change", () => {
             clearTimeout(window.autoSaveTimeout);
             window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
         });
@@ -193,22 +219,24 @@
         const settings = {
             sessionInstructions: sessionInstructionsEl.value,
             startInstructions: startInstructionsEl.value,
-            temperature: temperatureEl.value
+            temperature: temperatureEl.value,
+            voice: voiceEl.value
         };
         Object.entries(settings).forEach(([key, value]) => localStorage.setItem(key, value));
-        updateSettings();
+        // update the UI
+        loadSettings();
+        sendNewSettings();
         console.log("Settings reset!");
     }
 
-    function updateSettings() {
-        const sessionInstructions = sessionInstructionsEl.value;
-        const temperature = temperatureEl.value;
+    function sendNewSettings() {
         if (dc && dc.readyState === "open") {
             // Update session instructions
             const message = {
                 type: "session.update",
                 session: {
-                    instructions: sessionInstructions,
+                    instructions: sessionInstructionsEl.value,
+                    // voice: voiceEl.value, // Cannot update a conversation's voice if assistant audio is present."
                     tools: [
                         {
                             type: "function",
@@ -226,6 +254,7 @@
                         }
                     ],
                     tool_choice: "auto",
+                    temperature: parseFloat(temperatureEl.value)
                 }
             };
             dc.send(JSON.stringify(message));
@@ -237,12 +266,16 @@
 
     // Load settings from localStorage
     function loadSettings() {
+        const openaiApiKey = localStorage.getItem("openaiApiKey") || defaultKey;
         const sessionInstructions = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
         const startInstructions = localStorage.getItem("startInstructions") || defaultStartInstructions;
         const temperature = localStorage.getItem("temperature") || defaultTemperature;
+        const voice = localStorage.getItem("voice") || defaultVoice;
+        keyEl.value = openaiApiKey;
         sessionInstructionsEl.value = sessionInstructions;
         startInstructionsEl.value = startInstructions;
         temperatureEl.value = temperature;
+        voiceEl.value = voice;
     }
 
     function initWebSocket() {
@@ -258,11 +291,18 @@
             if (msg.type === "start_session") {
                 console.log("Received start_session from server");
                 appendOrUpdateLog("Session started.", "system-message");
-                if (msg["ephemeralKey"]) {
-                    await startSession(msg["ephemeralKey"]);
+                const openaiApiKey = keyEl.value;
+                if (openaiApiKey === defaultKey || openaiApiKey === "") {
+                    console.error("No OpenAI API Key provided");
+                    appendOrUpdateLog("Error: No OpenAI API Key provided.", "system-message");
                 } else {
-                    console.error("No ephemeral key received from server");
-                    appendOrUpdateLog("Error: No ephemeral key received from server.", "system-message");
+                    const ephemeralKey = await fetchEphemeralKey(openaiApiKey);
+                    if (ephemeralKey) {
+                        await startSession(ephemeralKey);
+                    } else {
+                        console.error("No ephemeral key received - check your key");
+                        appendOrUpdateLog("Error: No ephemeral key received - check your key.", "system-message");
+                    }
                 }
             } else if (msg.type === "end_session") {
                 console.log("Received end_session from server");
@@ -278,6 +318,43 @@
         ws.onclose = () => {
             console.log("WebSocket closed");
         };
+    }
+
+    /**
+     * Fetch an ephemeral key from OpenAI to start a Realtime session.
+     * @returns {Promise<*|null>}
+     */
+    async function fetchEphemeralKey(openaiApiKey) {
+        const headers = {
+            "Authorization": `Bearer ${openaiApiKey}`,
+            "Content-Type": "application/json"
+        };
+        const payload = {
+            model: "gpt-4o-mini-realtime-preview-2024-12-17",
+            voice: voiceEl.value,
+            input_audio_format: "pcm16",
+            input_audio_transcription: {model: "whisper-1"},
+            instructions: sessionInstructionsEl.value
+        };
+
+        try {
+            const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
+                method: "POST",
+                headers: headers,
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                console.error("Failed to create ephemeral session:", await response.text());
+                return null;
+            }
+
+            const data = await response.json();
+            return data.client_secret.value;
+        } catch (error) {
+            console.error("Error fetching ephemeral key:", error);
+            return null;
+        }
     }
 
     async function startSession(ephemeralKey) {
@@ -449,6 +526,7 @@
                 localTrack = null;
             }
             console.log("Session ended.");
+            appendOrUpdateLog("Session ended.", "system-message");
         }
 
         const message = {
@@ -456,7 +534,7 @@
             "response": {
                 "modalities": ["text", "audio"],
                 "instructions": instructions,
-                "temperature": 0.6,
+                "temperature": temperatureEl.value,
                 "max_output_tokens": 500
             }
         };
@@ -481,7 +559,7 @@
                 response: {
                     modalities: ["text", "audio"],
                     instructions: text,
-                    temperature: 0.8,
+                    temperature: temperatureEl.value,
                     max_output_tokens: 500
                 }
             };
@@ -492,6 +570,7 @@
             appendOrUpdateLog("Data channel not open. Please wait until session starts.", "system-message");
         }
     }
+
     sendButtonEl.addEventListener("click", sendText);
 
     // Add event listener for Enter key press in textInput

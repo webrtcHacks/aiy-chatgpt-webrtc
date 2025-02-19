@@ -2,9 +2,7 @@ import os
 import threading
 import asyncio
 import json
-import requests
 from time import sleep
-from dotenv import load_dotenv
 from aiohttp import web, WSMsgType
 
 # --- Global Variables ---
@@ -12,42 +10,6 @@ HTTP_PORT = 3000
 session_active = False
 connected_clients = set()
 main_loop = None
-
-# --- Load Environment Variables ---
-load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY is not set in the .env file")
-
-
-# --- Preserve the fetch_ephemeral_key Method ---
-def fetch_ephemeral_key():
-    instructions = "You are a friendly assistant."
-    try:
-        headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": "gpt-4o-mini-realtime-preview-2024-12-17",
-            "voice": "alloy",
-            "input_audio_format": "pcm16",
-            "input_audio_transcription": {"model": "whisper-1"},
-            "instructions": instructions
-        }
-        resp = requests.post(
-            "https://api.openai.com/v1/realtime/sessions",
-            headers=headers,
-            json=payload,
-        )
-        if resp.status_code != 200:
-            print("Failed to create ephemeral session:", resp.text)
-            return None
-        data = resp.json()
-        return data["client_secret"]["value"]
-    except Exception as e:
-        print("Error fetching ephemeral key:", e)
-        return None
 
 
 # --- Broadcast Message Functions ---
@@ -59,7 +21,7 @@ def broadcast_message(msg_dict):
     else:
         print("main_loop is not set. Cannot broadcast message.")
 
-
+#
 async def _async_broadcast(text_data):
     """Send the provided text data to every connected client."""
     print("Broadcasting message to all clients...")
@@ -83,10 +45,8 @@ def on_button_press():
     print("Button pressed (simulated)!")
     if not session_active:
         session_active = True
-        ephemeral_key = fetch_ephemeral_key()
         broadcast_message({
             "type": "start_session",
-            "ephemeralKey": ephemeral_key
         })
         print("Session started.")
     else:
@@ -137,9 +97,6 @@ async def websocket_handler(request):
         connected_clients.discard(ws)
         print(f"Client {request.remote} disconnected. Total connected clients: {len(connected_clients)}")
     return ws
-
-
-
 
 
 # --- App Startup Callback ---

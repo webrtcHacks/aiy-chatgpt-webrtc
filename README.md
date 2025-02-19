@@ -1,11 +1,11 @@
 # TODO
 
 - ~~fast blink for error~~
-- task to shut down the system
+- ~~task to shut down the system~~
 - webpage system instructions * config -> text file
-  - key
+  - ~~key~~
   - select voice
 - ~~display transcript?~~
-- text entry?
+- ~~text entry~~
 - start-up sound effect?
 - installation
