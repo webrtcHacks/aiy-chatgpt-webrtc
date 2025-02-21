@@ -82,6 +82,8 @@
 <p>Press the physical button to start/end a session.</p>
 
 <!-- Settings button -->
+<button id="startButton">🔘 Start Session</button>
+<button id="endButton" hidden>🔘 End Session</button>
 <button id="settingsButton">⚙️ Settings</button>
 
 <!-- Settings form -->
@@ -144,6 +146,8 @@
     const startInstructionsEl = $("startInstructions");
     const temperatureEl = $("temperature");
     const voiceEl = $("voice");
+    const startButtonEl = $("startButton");
+    const endButtonEl = $("endButton");
     const autoSaveStatusEl = $("autoSaveStatus");
     const settingsButtonEl = $("settingsButton");
     const settingsFormEl = $("settingsForm");
@@ -179,6 +183,30 @@
         // Auto-scroll to the bottom
         logEl.scrollTop = logEl.scrollHeight;
     }
+
+    // Start a new session
+    startButtonEl.addEventListener("click", async () => {
+        if (pc) {
+            console.log("Session already started");
+            appendOrUpdateLog("Session already started.", "system-message");
+            return;
+        }
+        startButtonEl.hidden = true;
+        endButtonEl.hidden = false;
+        await startSession();
+    });
+
+    // End the current session
+    endButtonEl.addEventListener("click", async () => {
+        if (!pc) {
+            console.log("No session to end");
+            appendOrUpdateLog("No session to end.", "system-message");
+            return;
+        }
+        startButtonEl.hidden = false;
+        endButtonEl.hidden = true;
+        await endSession();
+    });
 
     // Show/hide settings form
     settingsButtonEl.addEventListener("click", () => {
@@ -289,21 +317,7 @@
         ws.onmessage = async (event) => {
             const msg = JSON.parse(event.data);
             if (msg.type === "start_session") {
-                console.log("Received start_session from server");
-                appendOrUpdateLog("Session started.", "system-message");
-                const openaiApiKey = keyEl.value;
-                if (openaiApiKey === defaultKey || openaiApiKey === "") {
-                    console.error("No OpenAI API Key provided");
-                    appendOrUpdateLog("Error: No OpenAI API Key provided.", "system-message");
-                } else {
-                    const ephemeralKey = await fetchEphemeralKey(openaiApiKey);
-                    if (ephemeralKey) {
-                        await startSession(ephemeralKey);
-                    } else {
-                        console.error("No ephemeral key received - check your key");
-                        appendOrUpdateLog("Error: No ephemeral key received - check your key.", "system-message");
-                    }
-                }
+                await startSession();
             } else if (msg.type === "end_session") {
                 console.log("Received end_session from server");
                 appendOrUpdateLog("Session ended by the user.", "system-message");
@@ -350,14 +364,41 @@
             }
 
             const data = await response.json();
-            return data.client_secret.value;
+            const key = data?.client_secret?.value;
+            if (!key) {
+                console.error("Invalid response format: missing client_secret.value", data);
+                return null;
+            } else {
+                console.log("Received ephemeral key:", key);
+                return key;
+            }
         } catch (error) {
             console.error("Error fetching ephemeral key:", error);
             return null;
         }
     }
 
-    async function startSession(ephemeralKey) {
+    async function startSession() {
+
+        console.log("start_session");
+        startButtonEl.disabled = true;
+
+        const openaiApiKey = keyEl.value;
+        // Make sure the key is populated
+        if (openaiApiKey === defaultKey || openaiApiKey === "") {
+            console.error("No OpenAI API Key provided");
+            appendOrUpdateLog("Error: No OpenAI API Key provided.", "system-message");
+            return
+        }
+
+        const ephemeralKey = await fetchEphemeralKey(openaiApiKey);
+
+        if (!ephemeralKey) {
+            startButtonEl.hidden = false;
+            endButtonEl.hidden = true;
+            return;
+        }
+
         try {
             // Create PeerConnection
             pc = new RTCPeerConnection();
@@ -371,7 +412,14 @@
             };
 
             // Local microphone stream
-            const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+            const stream = await navigator.mediaDevices.getUserMedia({audio: true})
+                .catch(err => {
+                    console.error("Error accessing microphone:", err);
+                    appendOrUpdateLog("Error accessing microphone. Please allow microphone access.", "system-message");
+                    startButtonEl.disabled = false;
+                    startButtonEl.hidden = false;
+                    endButtonEl.hidden = true;
+                });
             localTrack = stream.getTracks()[0];
             pc.addTrack(localTrack);
 
@@ -473,6 +521,7 @@
                 };
                 dc.send(JSON.stringify(startMessage));
                 console.log("Sent message to GPT server:", startMessage);
+                appendOrUpdateLog("Session started.", "system-message");
             };
 
             // Create and send offer to OpenAI
@@ -496,14 +545,28 @@
             await pc.setRemoteDescription(answer);
 
             // Optional chime
-            const startedSound = new Audio("Chord2_Rev.wav");
-            await startedSound.play();
+            // const startedSound = new Audio("Chord2_Rev.wav");
+            // await startedSound.play();
 
             console.log("Realtime session started!");
-            window.send = dc.send;
+
+            startButtonEl.disabled = false;
+            startButtonEl.hidden = true;
+            endButtonEl.hidden = false;
+
         } catch (err) {
             console.error("Error starting session:", err);
+            appendOrUpdateLog("Error starting session. Please try again.", "system-message");
+            if (pc) {
+                pc.close();
+                pc = null;
+                dc = null;
+            }
+            startButtonEl.disabled = false;
+            startButtonEl.hidden = false;
+            endButtonEl.hidden = true;
         }
+
     }
 
     async function endSession(instructions) {
@@ -520,6 +583,7 @@
             if (pc) {
                 pc.close();
                 pc = null;
+                dc = null;
             }
             if (localTrack) {
                 localTrack.stop();
@@ -534,7 +598,7 @@
             "response": {
                 "modalities": ["text", "audio"],
                 "instructions": instructions,
-                "temperature": temperatureEl.value,
+                "temperature": parseFloat(temperatureEl.value),
                 "max_output_tokens": 500
             }
         };
@@ -559,7 +623,7 @@
                 response: {
                     modalities: ["text", "audio"],
                     instructions: text,
-                    temperature: temperatureEl.value,
+                    temperature: parseFloat(temperatureEl.value),
                     max_output_tokens: 500
                 }
             };
