@@ -7,7 +7,6 @@ from aiohttp import web, WSMsgType
 
 # --- Global Variables ---
 HTTP_PORT = 3000
-session_active = False
 connected_clients = set()
 main_loop = None
 
@@ -40,19 +39,10 @@ async def _async_broadcast(text_data):
 
 # --- Session Toggle (Button Press) ---
 def on_button_press():
-    """Toggle the session state and broadcast the appropriate message."""
-    global session_active
     print("Button pressed (simulated)!")
-    if not session_active:
-        session_active = True
-        broadcast_message({
-            "type": "start_session",
-        })
-        print("Session started.")
-    else:
-        session_active = False
-        broadcast_message({"type": "end_session"})
-        print("Session ended.")
+    broadcast_message({
+        "type": "button_press",
+    })
 
 
 # --- HTTP and WebSocket Handlers using aiohttp ---
@@ -62,7 +52,6 @@ async def index_handler(request):
 
 
 async def websocket_handler(request):
-    global session_active
     """Handle WebSocket connections."""
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -80,11 +69,9 @@ async def websocket_handler(request):
                         print("Page loaded")
                     elif data.get("type") == "power_down":
                         print("User asked to power down..")
-                        session_active = False
                         # os.system("sudo shutdown now")
                     elif data.get("type") == "end_session":
                         print("User asked to end session..")
-                        session_active = False
                     else:
                         print("Received unknown message:", data)
                 except json.JSONDecodeError:

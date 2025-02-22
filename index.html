@@ -316,12 +316,18 @@
         // Route handler for messages from the server
         ws.onmessage = async (event) => {
             const msg = JSON.parse(event.data);
-            if (msg.type === "start_session") {
+            if (msg.type === "button_press") {
+                if (!pc) {
+                    // No active session - start one
+                    startButtonEl.hidden = true;
+                    endButtonEl.hidden = false;
                 await startSession();
-            } else if (msg.type === "end_session") {
-                console.log("Received end_session from server");
-                appendOrUpdateLog("Session ended by the user.", "system-message");
+                } else {
+                    // Active session - end it
+                    startButtonEl.hidden = false;
+                    endButtonEl.hidden = true;
                 await endSession();
+                }
             } else {
                 console.log("Unknown message:", msg);
             }
