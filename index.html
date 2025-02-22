@@ -130,12 +130,15 @@
 </div>
 
 <script>
-    let ws;
-    let pc;
-    let localTrack;
+    // Globals
+    let ws; // websocket
+    let pc; // peer connection
+    let localTrack; // local audio track
     let dc;  // Only use the first opened data channel (because there are 2)
     const assistantResults = {}; // To track interim results by message ID
-    let openaiApiKey;
+    let openaiApiKey; // OpenAI API Key
+    const userMessages = {}; // To track user messages by item ID
+
 
     // Helper function to get element by ID
     const $ = (id) => document.getElementById(id);
@@ -156,14 +159,40 @@
     const textInputEl = $("textInput");
     const sendButtonEl = $("sendButton");
 
-    // Default settings
+    // Default model inputs
+    const model = "gpt-4o-mini-realtime-preview";
     const defaultKey = "Your OPENAI_API_KEY from platform.openai.com";
     const defaultSessionInstructions = "You are a friendly assistant";
     const defaultStartInstructions = "Greet the user and ask how you can help";
+    const defaultEndInstructions = "Input is ending until the user presses the button again. " +
+        "Give a quick good-bye. " +
+        "Sometimes remind the user to press the button to start a new session."
     const defaultTemperature = 0.7;
     const defaultVoice = "alloy";
+    const gptFunctions = [
+        {
+            type: "function",
+            name: "end_session",
+            description: "the user would like to stop interacting with the Agent " +
+                "by saying something like 'goodbye' or 'stop'.",
+            parameters: {},
+        },
+        {
+            type: "function",
+            name: "power_down",
+            description: "Triggers a system power-down when the user wants to turn off the computer " +
+                "by saying shut down, power off, turn off or similar phrases. " +
+                "Always ask for confirmation before executing.",
+            parameters: {}
+        }
+    ];
 
-    // Append new log entries above the input area
+    /**
+     * Append a new log entry to the log container.
+     * @param {string} message - The message to append.
+     * @param {string} className - The class name to add to the log entry.
+     * @param {string} messageId - The ID of the message to update.
+     */
     function appendOrUpdateLog(message, className = "", messageId = null) {
         let logEntry;
         if (messageId && $(messageId)) {
@@ -220,7 +249,9 @@
     temperatureEl.value = localStorage.getItem("temperature") || defaultTemperature;
     voiceEl.value = localStorage.getItem("voice") || defaultVoice;
 
-    // Function to autosave settings
+    /**
+     * Autosave settings to localStorage.
+     */
     function autoSaveSettings() {
         const settings = {
             openaiApiKey: keyEl.value,
@@ -242,7 +273,10 @@
         });
     });
 
-    // Save settings to localStorage
+
+    /**
+     * Reset settings to default values.
+     */
     function resetSettings() {
         const settings = {
             sessionInstructions: sessionInstructionsEl.value,
@@ -257,6 +291,9 @@
         console.log("Settings reset!");
     }
 
+    /**
+     * Send new settings to the GPT server.
+     */
     function sendNewSettings() {
         if (dc && dc.readyState === "open") {
             // Update session instructions
@@ -265,22 +302,7 @@
                 session: {
                     instructions: sessionInstructionsEl.value,
                     // voice: voiceEl.value, // Cannot update a conversation's voice if assistant audio is present."
-                    tools: [
-                        {
-                            type: "function",
-                            name: "end_session",
-                            description: "the user would like to stop interacting with the Agent",
-                            parameters: {},
-                        },
-                        {
-                            type: "function",
-                            name: "power_down",
-                            description: "Triggers a system power-down when the user wants to turn off the computer " +
-                                "by saying shut down, power off, turn off or similar phrases. " +
-                                "Always ask for confirmation before executing.",
-                            parameters: {}
-                        }
-                    ],
+                    tools: gptFunctions,
                     tool_choice: "auto",
                     temperature: parseFloat(temperatureEl.value)
                 }
@@ -292,7 +314,9 @@
         }
     }
 
-    // Load settings from localStorage
+    /**
+     * Load settings from localStorage.
+     */
     function loadSettings() {
         const openaiApiKey = localStorage.getItem("openaiApiKey") || defaultKey;
         const sessionInstructions = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
@@ -306,6 +330,9 @@
         voiceEl.value = voice;
     }
 
+    /**
+     * Initialize a WebSocket connection to the server.
+     */
     function initWebSocket() {
         ws = new WebSocket('ws://' + window.location.host + '/ws');
         ws.onopen = () => {
@@ -321,12 +348,12 @@
                     // No active session - start one
                     startButtonEl.hidden = true;
                     endButtonEl.hidden = false;
-                await startSession();
+                    await startSession();
                 } else {
                     // Active session - end it
                     startButtonEl.hidden = false;
                     endButtonEl.hidden = true;
-                await endSession();
+                    await endSession();
                 }
             } else {
                 console.log("Unknown message:", msg);
@@ -341,6 +368,71 @@
     }
 
     /**
+     * Handle data channel messages from the GPT server.
+     * @param {Object} event - The datachannel message event
+     */
+    function handleMessage(event) {
+        const message = JSON.parse(event.data);
+        console.info("Message from GPT server:", message);
+        const itemId = message.item_id;
+
+        switch (message.type) {
+            case "input_audio_buffer.speech_started":
+                userMessages[itemId] = {message: ""};
+                appendOrUpdateLog(`User: ...`, "user-message", itemId);
+                break;
+
+            case "conversation.item.input_audio_transcription.completed":
+                const content = message.transcript;
+                if (content && userMessages[itemId]) {
+                    userMessages[itemId].message = content;
+                    appendOrUpdateLog(`User: ${content}`, "user-message", itemId);
+                }
+                break;
+
+            case "response.audio_transcript.delta":
+                if (itemId) {
+                    assistantResults[itemId] = assistantResults[itemId] || "";
+                    assistantResults[itemId] += message.delta;
+                    appendOrUpdateLog(`Assistant (interim): ${assistantResults[itemId]}`, "interim-result", itemId);
+                }
+                break;
+
+            case "response.audio_transcript.done":
+                if (itemId) {
+                    assistantResults[itemId] = message.transcript;
+                    appendOrUpdateLog(`Assistant: ${message.transcript}`, "agent-message", itemId);
+                }
+                break;
+
+            case "response.function_call_arguments.done":
+                const {name} = message;
+                switch (name) {
+                    case "end_session":
+                        console.log("User confirmed end session");
+                        ws.send(JSON.stringify({type: "end_session"}));
+                        endSession();
+                        break;
+
+                    case "power_down":
+                        console.log("User confirmed power down");
+                        ws.send(JSON.stringify({type: "power_down"}));
+                        endSession("Tell the user they will need to turn the system back on start a new chat. ");
+                        break;
+                }
+                break;
+
+            case "output_audio_buffer.audio_stopped":
+                console.log("Final audio stopped");
+                endSession();
+                break;
+
+            // default:
+            //     console.log("Unhandled message:", message);
+        }
+    }
+
+    /**
      * Fetch an ephemeral key from OpenAI to start a Realtime session.
      * @returns {Promise<*|null>}
      */
@@ -350,7 +442,7 @@
             "Content-Type": "application/json"
         };
         const payload = {
-            model: "gpt-4o-mini-realtime-preview-2024-12-17",
+            model: model,
             voice: voiceEl.value,
             input_audio_format: "pcm16",
             input_audio_transcription: {model: "whisper-1"},
@@ -384,6 +476,9 @@
         }
     }
 
+    /**
+     * Start a new Realtime session with the OpenAI realtime WebRTC API.
+     */
     async function startSession() {
 
         console.log("start_session");
@@ -432,97 +527,33 @@
             // Data channel: only open once
             if (!dc) {
                 dc = pc.createDataChannel("oai-events");
-                const userMessages = {}; // To track user messages by item ID
-
-                // DataChannel route handler
-                dc.addEventListener("message", (e) => {
-                    const serverMsg = JSON.parse(e.data);
-                    console.info("Message from GPT server:", serverMsg);
-
-                    if (serverMsg.type === "input_audio_buffer.speech_started") {
-                        const itemId = serverMsg.item_id;
-                        userMessages[itemId] = {message: ""};
-                        appendOrUpdateLog(`User: ...`, "user-message", itemId); // Placeholder for user message
-                    } else if (serverMsg.type === "conversation.item.input_audio_transcription.completed") {
-                        const itemId = serverMsg.item_id;
-                        const content = serverMsg.transcript;
-                        if (content && userMessages[itemId]) {
-                            userMessages[itemId].message = content;
-                            appendOrUpdateLog(`User: ${content}`, "user-message", itemId); // Update user message
-                        }
-                    } else if (serverMsg.type === "response.audio_transcript.delta") {
-                        // Update interim transcript
-                        const delta = serverMsg.delta;
-                        const itemId = serverMsg.item_id;
-                        if (itemId) {
-                            assistantResults[itemId] = assistantResults[itemId] || "";
-                            assistantResults[itemId] += delta; // Accumulate interim results
-                            appendOrUpdateLog(`Assistant (interim): ${assistantResults[itemId]}`, "interim-result", itemId);
-                        }
-                    } else if (serverMsg.type === "response.audio_transcript.done") {
-                        // Replace interim with final transcript
-                        const finalTranscript = serverMsg.transcript;
-                        const itemId = serverMsg.item_id;
-                        if (itemId) {
-                            assistantResults[itemId] = finalTranscript; // Update with final result
-                            appendOrUpdateLog(`Assistant: ${finalTranscript}`, "agent-message", itemId);
-                        }
-                    } else if (serverMsg.type === "response.function_call_arguments.done") {
-                        const {name, arguments} = serverMsg;
-                        if (name === "end_session") {
-                            console.log("User confirmed end session");
-                            ws.send(JSON.stringify({type: "end_session"}));
-                            // End the session
-                            endSession();
-                        } else if (name === "power_down") {
-                            console.log("User confirmed power down");
-                            ws.send(JSON.stringify({type: "power_down"}));
-                            // End the session
-                            endSession("Tell the user they will need to turn the system back on start a new chat. ");
-                        }
-                    }
-                });
+                dc.addEventListener("message", handleMessage);
             } else {
-                console.log("Reusing existing datachannel for message communication", dc);
+                console.log("datachannel already exists", dc);
             }
 
             dc.onopen = () => {
-                const sessionInstructions = localStorage.getItem("sessionInstructions") || "You are a friendly assistant";
-                const startInstructions = localStorage.getItem("startInstructions") || "Greet the user and ask how you can help";
-                const temperature = parseFloat(localStorage.getItem("temperature")) || 0.7;
+                const sessionInstructions = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
+                const startInstructions = localStorage.getItem("startInstructions") || defaultStartInstructions;
+                const temperature = parseFloat(localStorage.getItem("temperature")) || defaultTemperature;
 
                 const systemMessage = {
                     type: "session.update",
                     session: {
                         instructions: sessionInstructions,
-                        tools: [
-                            {
-                                type: "function",
-                                name: "end_session",
-                                description: "the user would like to stop interacting with the Agent",
-                                parameters: {},
-                            },
-                            {
-                                type: "function",
-                                name: "power_down",
-                                description: "Triggers a system power-down when the user wants to turn off the computer " +
-                                    "by saying shut down, power off, turn off or similar phrases. " +
-                                    "Always ask for confirmation before executing.",
-                                parameters: {}
-                            }
-                        ],
+                        tools: gptFunctions,
                         tool_choice: "auto",
                     }
                 };
                 dc.send(JSON.stringify(systemMessage));
 
                 const startMessage = {
-                    "type": "response.create",
-                    "response": {
-                        "modalities": ["text", "audio"],
-                        "instructions": startInstructions,
-                        "temperature": temperature,
-                        "max_output_tokens": 500
+                    type: "response.create",
+                    response: {
+                        modalities: ["text", "audio"],
+                        instructions: startInstructions,
+                        temperature: temperature,
+                        max_output_tokens: 100
                     }
                 };
                 dc.send(JSON.stringify(startMessage));
@@ -535,7 +566,6 @@
             await pc.setLocalDescription(offer);
 
             const baseUrl = "https://api.openai.com/v1/realtime";
-            const model = "gpt-4o-realtime-preview-2024-12-17";
             const sdpResp = await fetch(`${baseUrl}?model=${model}`, {
                 method: "POST",
                 body: offer.sdp,
@@ -550,15 +580,11 @@
             const answer = {type: "answer", sdp: await sdpResp.text()};
             await pc.setRemoteDescription(answer);
 
-            // Optional chime
-            // const startedSound = new Audio("Chord2_Rev.wav");
-            // await startedSound.play();
-
-            console.log("Realtime session started!");
-
             startButtonEl.disabled = false;
             startButtonEl.hidden = true;
             endButtonEl.hidden = false;
+
+            console.log("Realtime session started!");
 
         } catch (err) {
             console.error("Error starting session:", err);
@@ -572,54 +598,55 @@
             startButtonEl.hidden = false;
             endButtonEl.hidden = true;
         }
-
     }
 
+    /**
+     * End the current Realtime session.
+     * @param {string} instructions - Instructions to send to the GPT model.
+     */
     async function endSession(instructions) {
         // Schedule session end after 12 seconds
-        setTimeout(() => endSessionClientSide(), 12000);
+        console.log("Ending session...");
 
-        // ToDo: default instructions
-        instructions = instructions || "Input is ending until the user presses the button again. " +
-            "Give a quick good-bye. " +
-            "Sometimes remind the user to press the button to start a new session."
+        const message = {
+            type: "response.create",
+            response: {
+                modalities: ["text", "audio"],
+                instructions: instructions || defaultEndInstructions,
+                temperature: parseFloat(temperatureEl.value),
+                max_output_tokens: 50
+            }
+        };
+        dc.send(JSON.stringify(message));
 
-        function endSessionClientSide() {
-            console.log("Ending session...");
+        // Turn-off mic input
+        if (localTrack) {
+            localTrack.stop();
+            localTrack = null;
+        }
+
+        endButtonEl.disabled = true;
+
+        // ToDo: Wait for the response to finish from the model before closing the session.
+        setTimeout(() => () => {
             if (pc) {
                 pc.close();
                 pc = null;
                 dc = null;
             }
-            if (localTrack) {
-                localTrack.stop();
-                localTrack = null;
-            }
             console.log("Session ended.");
             appendOrUpdateLog("Session ended.", "system-message");
-        }
 
-        const message = {
-            "type": "response.create",
-            "response": {
-                "modalities": ["text", "audio"],
-                "instructions": instructions,
-                "temperature": parseFloat(temperatureEl.value),
-                "max_output_tokens": 500
-            }
-        };
-        dc.send(JSON.stringify(message));
+            startButtonEl.disabled = false;
+            startButtonEl.hidden = false;
+            endButtonEl.hidden = true;
 
-        dc.addEventListener("message", (e) => {
-            const serverMsg = JSON.parse(e.data);
-            if (serverMsg.type === "output_audio_buffer.audio_stopped") {
-                console.log("Final audio stopped");
-                endSessionClientSide();
-            }
-        });
+        }, 12_000);
     }
 
-    // Send text messages from the input field as a new log entry
+    /**
+     * Send the text message from the input field to the GPT model.
+     */
     function sendText() {
         const text = textInputEl.value.trim();
         if (!text) return;
