@@ -116,6 +116,9 @@
     <input id="startInstructions" type="text" placeholder="Start instructions"
            value="Greet the user and ask how you can help">
     <br>
+    <label for="endInstructions">End instructions: </label>
+    <input id="endInstructions" type="text" placeholder="End instructions"
+           value="Give a quick good-bye. Sometimes remind the user to press the button to start a new session.">
     <button onclick="resetSettings()"> 🔄 Reset Settings</button>
     <span id="autoSaveStatus"></span>
 </div>
@@ -164,6 +167,7 @@
             parameters: {}
         }
     ];
+
 
     /**
      * Fetch an ephemeral key from OpenAI to start a Realtime session.
@@ -257,7 +261,7 @@
                 break;
 
             default:
-                // For debugging, you can log unhandled message types
+                // For debugging
                 // console.log("Unhandled message type:", message.type);
                 break;
         }
@@ -397,17 +401,11 @@
      */
     async function endSession(instructions) {
         console.log("Ending session...");
-
-        // Send a final "goodbye" or custom instructions
-        const defaultEnd = "Input is ending until the user presses the button again. " +
-            "Give a quick good-bye. " +
-            "Sometimes remind the user to press the button to start a new session.";
-        const finalInstr = instructions || defaultEnd;
         const message = {
             type: "response.create",
             response: {
                 modalities: ["text", "audio"],
-                instructions: finalInstr,
+                instructions: endInstructionsEl.value || defaultEndInstructions,
                 temperature: parseFloat(temperatureEl.value),
                 max_output_tokens: 200
             }
@@ -455,6 +453,7 @@
     const keyEl = $("openaiApiKey");
     const sessionInstructionsEl = $("sessionInstructions");
     const startInstructionsEl = $("startInstructions");
+    const endInstructionsEl = $("endInstructions");
     const temperatureEl = $("temperature");
     const voiceEl = $("voice");
     const startButtonEl = $("startButton");
@@ -471,6 +470,7 @@
     const defaultKey = "Your OPENAI_API_KEY from platform.openai.com";
     const defaultSessionInstructions = "You are a friendly assistant";
     const defaultStartInstructions = "Greet the user and ask how you can help";
+    const defaultEndInstructions = "Give a quick good-bye. Sometimes remind the user to press the button to start a new session.";
     const defaultTemperature = 0.7;
     const defaultVoice = "alloy";
 
@@ -500,6 +500,7 @@
         keyEl.value = localStorage.getItem("openaiApiKey") || defaultKey;
         sessionInstructionsEl.value = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
         startInstructionsEl.value = localStorage.getItem("startInstructions") || defaultStartInstructions;
+        endInstructionsEl.value = localStorage.getItem("endInstructions") || defaultEndInstructions;
         temperatureEl.value = localStorage.getItem("temperature") || defaultTemperature;
         voiceEl.value = localStorage.getItem("voice") || defaultVoice;
     }
@@ -564,11 +565,12 @@
     }
 
     // Debounce the settings autosave
-    [keyEl, sessionInstructionsEl, startInstructionsEl, temperatureEl, voiceEl].forEach((input) => {
-        input.addEventListener("change", () => {
-            clearTimeout(window.autoSaveTimeout);
-            window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
-        });
+    [keyEl, sessionInstructionsEl, startInstructionsEl, endInstructionsEl, temperatureEl, voiceEl]
+        .forEach((input) => {
+            input.addEventListener("change", () => {
+                clearTimeout(window.autoSaveTimeout);
+                window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
+            });
     });
 
     /**
