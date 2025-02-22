@@ -27,7 +27,7 @@
             margin-bottom: 5px;
         }
 
-        /* Input area styles as part of the log container */
+        /* Input area as part of the log container */
         #inputContainer {
             margin-top: auto; /* push input area to the bottom */
             display: flex;
@@ -43,7 +43,7 @@
             border: 1px solid #555;
         }
 
-        Button {
+        button {
             padding: 8px;
             background: #555;
             color: #f9f9f9;
@@ -66,7 +66,7 @@
             background: #444;
             color: #f9f9f9;
             border: 1px solid #555;
-            box-sizing: border-box; /* Ensure padding and border are included in the element's total width */
+            box-sizing: border-box;
         }
 
         #settingsForm button {
@@ -77,11 +77,12 @@
         }
     </style>
 </head>
+
 <body>
 <h1>Chat with GPT-4 Realtime and WebRTC</h1>
 <p>Press the physical button to start/end a session.</p>
 
-<!-- Settings button -->
+<!-- Buttons for session control and settings -->
 <button id="startButton">🔘 Start Session</button>
 <button id="endButton" hidden>🔘 End Session</button>
 <button id="settingsButton">⚙️ Settings</button>
@@ -108,7 +109,6 @@
         <option value="verse">Verse</option>
     </select>
     <br>
-
     <label for="sessionInstructions">Session instructions: </label>
     <input id="sessionInstructions" type="text" placeholder="Session instructions" value="You are a friendly assistant">
     <br>
@@ -120,256 +120,94 @@
     <span id="autoSaveStatus"></span>
 </div>
 
-<!-- Single container for both log messages and the input area -->
+<!-- Log container with an input field at the bottom -->
 <div id="log">
     <div id="inputContainer">
         <label for="textInput"></label>
         <input id="textInput" type="text" placeholder="Type your message here">
-        <button id="sendButton" onclick="sendText()">Send</button>
+        <button id="sendButton">Send</button>
     </div>
 </div>
 
-<script>
-    // Globals
-    let ws; // websocket
-    let pc; // peer connection
-    let localTrack; // local audio track
-    let dc;  // Only use the first opened data channel (because there are 2)
-    const assistantResults = {}; // To track interim results by message ID
-    let openaiApiKey; // OpenAI API Key
-    const userMessages = {}; // To track user messages by item ID
+<!--
+  1) Core WebRTC & Realtime logic:
+     - Global variables
+     - fetchEphemeralKey
+     - startSession
+     - endSession
+     - handleMessage
+     ...
+-->
+<script id="rtc-logic">
+    // Global references
+    let ws;            // WebSocket
+    let pc;            // RTCPeerConnection
+    let localTrack;    // Local audio track
+    let dc;            // Data channel
+    const assistantResults = {}; // Track interim/final transcripts
+    const userMessages = {};     // Track user messages per item ID
 
-
-    // Helper function to get element by ID
-    const $ = (id) => document.getElementById(id);
-
-    // Store elements in variables
-    const keyEl = $("openaiApiKey");
-    const sessionInstructionsEl = $("sessionInstructions");
-    const startInstructionsEl = $("startInstructions");
-    const temperatureEl = $("temperature");
-    const voiceEl = $("voice");
-    const startButtonEl = $("startButton");
-    const endButtonEl = $("endButton");
-    const autoSaveStatusEl = $("autoSaveStatus");
-    const settingsButtonEl = $("settingsButton");
-    const settingsFormEl = $("settingsForm");
-    const logEl = $("log");
-    const inputContainerEl = $("inputContainer");
-    const textInputEl = $("textInput");
-    const sendButtonEl = $("sendButton");
-
-    // Default model inputs
+    // Model & function definitions
     const model = "gpt-4o-mini-realtime-preview";
-    const defaultKey = "Your OPENAI_API_KEY from platform.openai.com";
-    const defaultSessionInstructions = "You are a friendly assistant";
-    const defaultStartInstructions = "Greet the user and ask how you can help";
-    const defaultEndInstructions = "Input is ending until the user presses the button again. " +
-        "Give a quick good-bye. " +
-        "Sometimes remind the user to press the button to start a new session."
-    const defaultTemperature = 0.7;
-    const defaultVoice = "alloy";
     const gptFunctions = [
         {
             type: "function",
             name: "end_session",
-            description: "the user would like to stop interacting with the Agent " +
-                "by saying something like 'goodbye' or 'stop'.",
+            description: "the user would like to stop interacting with the Agent",
             parameters: {},
         },
         {
             type: "function",
             name: "power_down",
-            description: "Triggers a system power-down when the user wants to turn off the computer " +
-                "by saying shut down, power off, turn off or similar phrases. " +
+            description: "Triggers a system power-down when the user wants to turn off the computer. " +
                 "Always ask for confirmation before executing.",
             parameters: {}
         }
     ];
 
     /**
-     * Append a new log entry to the log container.
-     * @param {string} message - The message to append.
-     * @param {string} className - The class name to add to the log entry.
-     * @param {string} messageId - The ID of the message to update.
+     * Fetch an ephemeral key from OpenAI to start a Realtime session.
      */
-    function appendOrUpdateLog(message, className = "", messageId = null) {
-        let logEntry;
-        if (messageId && $(messageId)) {
-            // Update existing log entry
-            logEntry = $(messageId);
-            logEntry.textContent = message;
-        } else {
-            // Create a new log entry
-            logEntry = document.createElement("div");
-            logEntry.textContent = message;
-            logEntry.classList.add("log-message");
-            if (className) logEntry.classList.add(className);
-            if (messageId) logEntry.id = messageId;
-            // Insert the log entry before the input container so that the input stays at the bottom.
-            logEl.insertBefore(logEntry, inputContainerEl);
-        }
-        // Auto-scroll to the bottom
-        logEl.scrollTop = logEl.scrollHeight;
-    }
-
-    // Start a new session
-    startButtonEl.addEventListener("click", async () => {
-        if (pc) {
-            console.log("Session already started");
-            appendOrUpdateLog("Session already started.", "system-message");
-            return;
-        }
-        startButtonEl.hidden = true;
-        endButtonEl.hidden = false;
-        await startSession();
-    });
-
-    // End the current session
-    endButtonEl.addEventListener("click", async () => {
-        if (!pc) {
-            console.log("No session to end");
-            appendOrUpdateLog("No session to end.", "system-message");
-            return;
-        }
-        startButtonEl.hidden = false;
-        endButtonEl.hidden = true;
-        await endSession();
-    });
-
-    // Show/hide settings form
-    settingsButtonEl.addEventListener("click", () => {
-        settingsFormEl.style.display = settingsFormEl.style.display === "none" ? "block" : "none";
-    });
-
-    // Load settings from localStorage
-    keyEl.value = localStorage.getItem("openaiApiKey") || defaultKey;
-    sessionInstructionsEl.value = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
-    startInstructionsEl.value = localStorage.getItem("startInstructions") || defaultStartInstructions;
-    temperatureEl.value = localStorage.getItem("temperature") || defaultTemperature;
-    voiceEl.value = localStorage.getItem("voice") || defaultVoice;
-
-    /**
-     * Autosave settings to localStorage.
-     */
-    function autoSaveSettings() {
-        const settings = {
-            openaiApiKey: keyEl.value,
-            sessionInstructions: sessionInstructionsEl.value,
-            startInstructions: startInstructionsEl.value,
-            temperature: temperatureEl.value,
-            voice: voiceEl.value
-        };
-        Object.entries(settings).forEach(([key, value]) => localStorage.setItem(key, value));
-        sendNewSettings();
-        autoSaveStatusEl.textContent = "Settings autosaved at " + new Date().toLocaleTimeString();
-    }
-
-    // Add event listeners to input fields to trigger autosave
-    [keyEl, sessionInstructionsEl, startInstructionsEl, temperatureEl, voiceEl].forEach(el => {
-        el.addEventListener("change", () => {
-            clearTimeout(window.autoSaveTimeout);
-            window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
-        });
-    });
-
-
-    /**
-     * Reset settings to default values.
-     */
-    function resetSettings() {
-        const settings = {
-            sessionInstructions: sessionInstructionsEl.value,
-            startInstructions: startInstructionsEl.value,
-            temperature: temperatureEl.value,
-            voice: voiceEl.value
-        };
-        Object.entries(settings).forEach(([key, value]) => localStorage.setItem(key, value));
-        // update the UI
-        loadSettings();
-        sendNewSettings();
-        console.log("Settings reset!");
-    }
-
-    /**
-     * Send new settings to the GPT server.
-     */
-    function sendNewSettings() {
-        if (dc && dc.readyState === "open") {
-            // Update session instructions
-            const message = {
-                type: "session.update",
-                session: {
-                    instructions: sessionInstructionsEl.value,
-                    // voice: voiceEl.value, // Cannot update a conversation's voice if assistant audio is present."
-                    tools: gptFunctions,
-                    tool_choice: "auto",
-                    temperature: parseFloat(temperatureEl.value)
-                }
+    async function fetchEphemeralKey(apiKey) {
+        try {
+            const headers = {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json"
             };
-            dc.send(JSON.stringify(message));
-            console.log("Sent message to GPT server:", message);
-        } else {
-            console.log("Data channel not open. Please wait until session starts.");
+            const payload = {
+                model: model,
+                voice: voiceEl.value,
+                input_audio_format: "pcm16",
+                input_audio_transcription: {model: "whisper-1"},
+                instructions: sessionInstructionsEl.value
+            };
+
+            const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
+                method: "POST",
+                headers: headers,
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                console.error("Failed to create ephemeral session:", await response.text());
+                return null;
+            }
+            const data = await response.json();
+            const key = data?.client_secret?.value;
+            if (!key) {
+                console.error("Invalid response format:", data);
+                return null;
+            }
+            console.log("Received ephemeral key:", key);
+            return key;
+        } catch (error) {
+            console.error("Error fetching ephemeral key:", error);
+            return null;
         }
     }
 
     /**
-     * Load settings from localStorage.
-     */
-    function loadSettings() {
-        const openaiApiKey = localStorage.getItem("openaiApiKey") || defaultKey;
-        const sessionInstructions = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
-        const startInstructions = localStorage.getItem("startInstructions") || defaultStartInstructions;
-        const temperature = localStorage.getItem("temperature") || defaultTemperature;
-        const voice = localStorage.getItem("voice") || defaultVoice;
-        keyEl.value = openaiApiKey;
-        sessionInstructionsEl.value = sessionInstructions;
-        startInstructionsEl.value = startInstructions;
-        temperatureEl.value = temperature;
-        voiceEl.value = voice;
-    }
-
-    /**
-     * Initialize a WebSocket connection to the server.
-     */
-    function initWebSocket() {
-        ws = new WebSocket('ws://' + window.location.host + '/ws');
-        ws.onopen = () => {
-            console.log("WebSocket connected to server");
-            ws.send(JSON.stringify({type: "page_loaded"}));
-        };
-
-        // Route handler for messages from the server
-        ws.onmessage = async (event) => {
-            const msg = JSON.parse(event.data);
-            if (msg.type === "button_press") {
-                if (!pc) {
-                    // No active session - start one
-                    startButtonEl.hidden = true;
-                    endButtonEl.hidden = false;
-                    await startSession();
-                } else {
-                    // Active session - end it
-                    startButtonEl.hidden = false;
-                    endButtonEl.hidden = true;
-                    await endSession();
-                }
-            } else {
-                console.log("Unknown message:", msg);
-            }
-        };
-        ws.onerror = (err) => {
-            console.error("WebSocket error:", err);
-        };
-        ws.onclose = () => {
-            console.log("WebSocket closed");
-        };
-    }
-
-    /**
-     * Handle data channel messages from the GPT server.
-     * @param {Object} event - The datachannel message event
+     * Handle incoming DataChannel messages from the GPT server.
      */
     function handleMessage(event) {
         const message = JSON.parse(event.data);
@@ -407,93 +245,39 @@
 
             case "response.function_call_arguments.done":
                 const {name} = message;
-                switch (name) {
-                    case "end_session":
-                        console.log("User confirmed end session");
-                        ws.send(JSON.stringify({type: "end_session"}));
-                        endSession();
-                        break;
-
-                    case "power_down":
-                        console.log("User confirmed power down");
-                        ws.send(JSON.stringify({type: "power_down"}));
-                        endSession("Tell the user they will need to turn the system back on start a new chat. ");
-                        break;
+                if (name === "end_session") {
+                    console.log("User confirmed end session");
+                    ws.send(JSON.stringify({type: "end_session"}));
+                    endSession();
+                } else if (name === "power_down") {
+                    console.log("User confirmed power down");
+                    ws.send(JSON.stringify({type: "power_down"}));
+                    endSession("Tell the user they will need to turn the system back on to start a new chat.");
                 }
                 break;
 
-            case "output_audio_buffer.audio_stopped":
-                console.log("Final audio stopped");
-                endSession();
+            default:
+                // For debugging, you can log unhandled message types
+                // console.log("Unhandled message type:", message.type);
                 break;
-
-            // default:
-            //     console.log("Unhandled message:", message);
         }
     }
 
     /**
-     * Fetch an ephemeral key from OpenAI to start a Realtime session.
-     * @returns {Promise<*|null>}
-     */
-    async function fetchEphemeralKey(openaiApiKey) {
-        const headers = {
-            "Authorization": `Bearer ${openaiApiKey}`,
-            "Content-Type": "application/json"
-        };
-        const payload = {
-            model: model,
-            voice: voiceEl.value,
-            input_audio_format: "pcm16",
-            input_audio_transcription: {model: "whisper-1"},
-            instructions: sessionInstructionsEl.value
-        };
-
-        try {
-            const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
-                method: "POST",
-                headers: headers,
-                body: JSON.stringify(payload)
-            });
-
-            if (!response.ok) {
-                console.error("Failed to create ephemeral session:", await response.text());
-                return null;
-            }
-
-            const data = await response.json();
-            const key = data?.client_secret?.value;
-            if (!key) {
-                console.error("Invalid response format: missing client_secret.value", data);
-                return null;
-            } else {
-                console.log("Received ephemeral key:", key);
-                return key;
-            }
-        } catch (error) {
-            console.error("Error fetching ephemeral key:", error);
-            return null;
-        }
-    }
-
-    /**
-     * Start a new Realtime session with the OpenAI realtime WebRTC API.
+     * Start a new WebRTC session with the OpenAI Realtime API.
      */
     async function startSession() {
-
         console.log("start_session");
         startButtonEl.disabled = true;
 
-        const openaiApiKey = keyEl.value;
-        // Make sure the key is populated
-        if (openaiApiKey === defaultKey || openaiApiKey === "") {
+        const apiKey = keyEl.value;
+        if (!apiKey || apiKey === "Your OPENAI_API_KEY from platform.openai.com") {
             console.error("No OpenAI API Key provided");
             appendOrUpdateLog("Error: No OpenAI API Key provided.", "system-message");
-            return
+            return;
         }
 
-        const ephemeralKey = await fetchEphemeralKey(openaiApiKey);
-
+        const ephemeralKey = await fetchEphemeralKey(apiKey);
         if (!ephemeralKey) {
             startButtonEl.hidden = false;
             endButtonEl.hidden = true;
@@ -504,64 +288,73 @@
             // Create PeerConnection
             pc = new RTCPeerConnection();
 
-            // Remote audio element
+            // Create an audio element for the remote track
             const audioEl = document.createElement("audio");
             audioEl.autoplay = true;
             document.body.appendChild(audioEl);
+
+            // On receiving remote track
             pc.ontrack = (e) => {
                 audioEl.srcObject = e.streams[0];
             };
 
-            // Local microphone stream
+            // Get local mic
             const stream = await navigator.mediaDevices.getUserMedia({audio: true})
                 .catch(err => {
-                    console.error("Error accessing microphone:", err);
-                    appendOrUpdateLog("Error accessing microphone. Please allow microphone access.", "system-message");
+                    console.error("Error accessing mic:", err);
+                    appendOrUpdateLog("Mic access error. Check permissions.", "system-message");
                     startButtonEl.disabled = false;
                     startButtonEl.hidden = false;
                     endButtonEl.hidden = true;
                 });
+
+            if (!stream) {
+                // If no stream, something went wrong (permissions?)
+                return;
+            }
             localTrack = stream.getTracks()[0];
             pc.addTrack(localTrack);
 
-            // Data channel: only open once
+            // Create data channel once
             if (!dc) {
                 dc = pc.createDataChannel("oai-events");
                 dc.addEventListener("message", handleMessage);
             } else {
-                console.log("datachannel already exists", dc);
+                console.log("Data channel already exists");
             }
 
+            // Send session instructions upon opening the data channel
             dc.onopen = () => {
-                const sessionInstructions = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
-                const startInstructions = localStorage.getItem("startInstructions") || defaultStartInstructions;
-                const temperature = parseFloat(localStorage.getItem("temperature")) || defaultTemperature;
+                const sessionInstruct = localStorage.getItem("sessionInstructions") || "You are a friendly assistant";
+                const startInstruct = localStorage.getItem("startInstructions") || "Greet the user and ask how you can help";
+                const temperature = parseFloat(localStorage.getItem("temperature")) || 0.7;
 
+                // Update the session
                 const systemMessage = {
                     type: "session.update",
                     session: {
-                        instructions: sessionInstructions,
+                        instructions: sessionInstruct,
                         tools: gptFunctions,
-                        tool_choice: "auto",
+                        tool_choice: "auto"
                     }
                 };
                 dc.send(JSON.stringify(systemMessage));
 
+                // Start instructions
                 const startMessage = {
                     type: "response.create",
                     response: {
                         modalities: ["text", "audio"],
-                        instructions: startInstructions,
+                        instructions: startInstruct,
                         temperature: temperature,
                         max_output_tokens: 100
                     }
                 };
                 dc.send(JSON.stringify(startMessage));
-                console.log("Sent message to GPT server:", startMessage);
                 appendOrUpdateLog("Session started.", "system-message");
             };
 
-            // Create and send offer to OpenAI
+            // Create offer & get an answer from OpenAI
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
 
@@ -575,7 +368,7 @@
                 },
             });
             if (!sdpResp.ok) {
-                console.error(new Error("Failed to fetch SDP answer from OpenAI"));
+                console.error("Failed to fetch SDP answer:", await sdpResp.text());
             }
             const answer = {type: "answer", sdp: await sdpResp.text()};
             await pc.setRemoteDescription(answer);
@@ -585,7 +378,6 @@
             endButtonEl.hidden = false;
 
             console.log("Realtime session started!");
-
         } catch (err) {
             console.error("Error starting session:", err);
             appendOrUpdateLog("Error starting session. Please try again.", "system-message");
@@ -601,25 +393,30 @@
     }
 
     /**
-     * End the current Realtime session.
-     * @param {string} instructions - Instructions to send to the GPT model.
+     * End the current session, optionally sending instructions for a closing message.
      */
     async function endSession(instructions) {
-        // Schedule session end after 12 seconds
         console.log("Ending session...");
 
+        // Send a final "goodbye" or custom instructions
+        const defaultEnd = "Input is ending until the user presses the button again. " +
+            "Give a quick good-bye. " +
+            "Sometimes remind the user to press the button to start a new session.";
+        const finalInstr = instructions || defaultEnd;
         const message = {
             type: "response.create",
             response: {
                 modalities: ["text", "audio"],
-                instructions: instructions || defaultEndInstructions,
+                instructions: finalInstr,
                 temperature: parseFloat(temperatureEl.value),
-                max_output_tokens: 50
+                max_output_tokens: 200
             }
         };
-        dc.send(JSON.stringify(message));
+        if (dc && dc.readyState === "open") {
+            dc.send(JSON.stringify(message));
+        }
 
-        // Turn-off mic input
+        // Turn off mic
         if (localTrack) {
             localTrack.stop();
             localTrack = null;
@@ -627,25 +424,155 @@
 
         endButtonEl.disabled = true;
 
-        // ToDo: Wait for the response to finish from the model before closing the session.
-        setTimeout(() => () => {
-            if (pc) {
-                pc.close();
-                pc = null;
-                dc = null;
+        // Close after the final message
+        dc.addEventListener("message", (event) => {
+            const message = JSON.parse(event.data);
+            if (message.type === "output_audio_buffer.stopped") {
+                console.log("Session ended.");
+                appendOrUpdateLog("Session ended.", "system-message");
+                startButtonEl.disabled = false;
+                startButtonEl.hidden = false;
+                endButtonEl.hidden = true;
+
             }
-            console.log("Session ended.");
-            appendOrUpdateLog("Session ended.", "system-message");
+        });
+    }
+</script>
 
-            startButtonEl.disabled = false;
-            startButtonEl.hidden = false;
-            endButtonEl.hidden = true;
+<!--
+  2) UI logic & event wiring:
+     - references to DOM elements
+     - load/save settings
+     - button event handlers
+     - WebSocket init
+     ...
+-->
+<script id="ui-logic">
+    // Helper to get an element by ID
+    const $ = (id) => document.getElementById(id);
 
-        }, 12_000);
+    // DOM element references
+    const keyEl = $("openaiApiKey");
+    const sessionInstructionsEl = $("sessionInstructions");
+    const startInstructionsEl = $("startInstructions");
+    const temperatureEl = $("temperature");
+    const voiceEl = $("voice");
+    const startButtonEl = $("startButton");
+    const endButtonEl = $("endButton");
+    const autoSaveStatusEl = $("autoSaveStatus");
+    const settingsButtonEl = $("settingsButton");
+    const settingsFormEl = $("settingsForm");
+    const logEl = $("log");
+    const inputContainerEl = $("inputContainer");
+    const textInputEl = $("textInput");
+    const sendButtonEl = $("sendButton");
+
+    // Default values
+    const defaultKey = "Your OPENAI_API_KEY from platform.openai.com";
+    const defaultSessionInstructions = "You are a friendly assistant";
+    const defaultStartInstructions = "Greet the user and ask how you can help";
+    const defaultTemperature = 0.7;
+    const defaultVoice = "alloy";
+
+    /**
+     * Insert a new log entry or update an existing one (by messageId).
+     */
+    function appendOrUpdateLog(message, className = "", messageId = null) {
+        let logEntry;
+        if (messageId && $(messageId)) {
+            logEntry = $(messageId);
+            logEntry.textContent = message;
+        } else {
+            logEntry = document.createElement("div");
+            logEntry.textContent = message;
+            logEntry.classList.add("log-message");
+            if (className) logEntry.classList.add(className);
+            if (messageId) logEntry.id = messageId;
+            logEl.insertBefore(logEntry, inputContainerEl);
+        }
+        logEl.scrollTop = logEl.scrollHeight;
     }
 
     /**
-     * Send the text message from the input field to the GPT model.
+     * Load settings from localStorage into UI fields.
+     */
+    function loadSettings() {
+        keyEl.value = localStorage.getItem("openaiApiKey") || defaultKey;
+        sessionInstructionsEl.value = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
+        startInstructionsEl.value = localStorage.getItem("startInstructions") || defaultStartInstructions;
+        temperatureEl.value = localStorage.getItem("temperature") || defaultTemperature;
+        voiceEl.value = localStorage.getItem("voice") || defaultVoice;
+    }
+
+    /**
+     * Autosave changed settings to localStorage (debounced by 2s).
+     */
+    function autoSaveSettings() {
+        const settings = {
+            openaiApiKey: keyEl.value,
+            sessionInstructions: sessionInstructionsEl.value,
+            startInstructions: startInstructionsEl.value,
+            temperature: temperatureEl.value,
+            voice: voiceEl.value
+        };
+        for (const [k, v] of Object.entries(settings)) {
+            localStorage.setItem(k, v);
+        }
+        sendNewSettings();
+        autoSaveStatusEl.textContent =
+            "Settings autosaved at " + new Date().toLocaleTimeString();
+    }
+
+    /**
+     * Reset settings and re-save them to localStorage.
+     */
+    function resetSettings() {
+        const settings = {
+            sessionInstructions: sessionInstructionsEl.value,
+            startInstructions: startInstructionsEl.value,
+            temperature: temperatureEl.value,
+            voice: voiceEl.value
+        };
+        for (const [k, v] of Object.entries(settings)) {
+            localStorage.setItem(k, v);
+        }
+        loadSettings();
+        sendNewSettings();
+        console.log("Settings reset!");
+    }
+
+    /**
+     * Send updated session instructions to the GPT server (if data channel is open).
+     */
+    function sendNewSettings() {
+        if (dc && dc.readyState === "open") {
+            const message = {
+                type: "session.update",
+                session: {
+                    instructions: sessionInstructionsEl.value,
+                    tools: gptFunctions,
+                    tool_choice: "auto",
+                    temperature: parseFloat(temperatureEl.value),
+                    // voice: voiceEl.value  // can't change voice mid-session
+                }
+            };
+            dc.send(JSON.stringify(message));
+            console.log("Sent updated session settings:", message);
+        } else {
+            console.log("Data channel not open. Please wait until session starts.");
+        }
+    }
+
+    // Debounce the settings autosave
+    [keyEl, sessionInstructionsEl, startInstructionsEl, temperatureEl, voiceEl].forEach((input) => {
+        input.addEventListener("change", () => {
+            clearTimeout(window.autoSaveTimeout);
+            window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
+        });
+    });
+
+    /**
+     * Send the user's typed message to the GPT server over the data channel.
      */
     function sendText() {
         const text = textInputEl.value.trim();
@@ -668,20 +595,79 @@
         }
     }
 
-    sendButtonEl.addEventListener("click", sendText);
+    // Button event handlers for starting / ending sessions
+    startButtonEl.addEventListener("click", async () => {
+        if (pc) {
+            console.log("Session already started");
+            appendOrUpdateLog("Session already started.", "system-message");
+            return;
+        }
+        startButtonEl.hidden = true;
+        endButtonEl.hidden = false;
+        await startSession();
+    });
 
-    // Add event listener for Enter key press in textInput
-    textInputEl.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
+    endButtonEl.addEventListener("click", async () => {
+        if (!pc) {
+            console.log("No session to end");
+            appendOrUpdateLog("No session to end.", "system-message");
+            return;
+        }
+        startButtonEl.hidden = false;
+        endButtonEl.hidden = true;
+        await endSession();
+    });
+
+    // Show/hide settings form
+    settingsButtonEl.addEventListener("click", () => {
+        settingsFormEl.style.display =
+            (settingsFormEl.style.display === "none") ? "block" : "none";
+    });
+
+    // Send on click or Enter press
+    sendButtonEl.addEventListener("click", sendText);
+    textInputEl.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
             sendText();
         }
     });
 
-    // Initialize WebSocket when the window loads
+    /**
+     * Initialize the WebSocket connection to the server (for detecting button press, etc.).
+     */
+    function initWebSocket() {
+        ws = new WebSocket('ws://' + window.location.host + '/ws');
+        ws.onopen = () => {
+            console.log("WebSocket connected");
+            ws.send(JSON.stringify({type: "page_loaded"}));
+        };
+        ws.onmessage = async (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.type === "button_press") {
+                // Toggles session start/end
+                if (!pc) {
+                    startButtonEl.hidden = true;
+                    endButtonEl.hidden = false;
+                    await startSession();
+                } else {
+                    startButtonEl.hidden = false;
+                    endButtonEl.hidden = true;
+                    await endSession();
+                }
+            } else {
+                console.log("Unknown ws message:", msg);
+            }
+        };
+        ws.onerror = (err) => console.error("WebSocket error:", err);
+        ws.onclose = () => console.log("WebSocket closed");
+    }
+
+    // On window load, initialize settings and the WebSocket
     window.addEventListener("load", () => {
         loadSettings();
         initWebSocket();
     });
 </script>
+
 </body>
 </html>
