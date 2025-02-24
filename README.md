@@ -1,11 +1,10 @@
 # TODO
 
-- ~~fast blink for error~~
-- ~~task to shut down the system~~
-- webpage system instructions * config -> text file
-  - ~~key~~
-  - select voice
-- ~~display transcript?~~
-- ~~text entry~~
-- start-up sound effect?
-- installation
+## pi
+- install / package
+
+## GitHub
+- readme
+- model
+- VAD - https://learn.microsoft.com/en-us/azure/ai-services/openai/how-to/realtime-audio#vad-without-automatic-response-generation
+- resume session staste
