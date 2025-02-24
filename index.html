@@ -83,8 +83,8 @@
 <p>Press the physical button to start/end a session.</p>
 
 <!-- Buttons for session control and settings -->
-<button id="startButton">🔘 Start Session</button>
-<button id="endButton" hidden>🔘 End Session</button>
+<button id="startButton">🟢 Start Session</button>
+<button id="endButton" hidden>🔴 End Session</button>
 <button id="settingsButton">⚙️ Settings</button>
 
 <!-- Settings form -->
@@ -426,6 +426,11 @@
         dc.addEventListener("message", (event) => {
             const message = JSON.parse(event.data);
             if (message.type === "output_audio_buffer.stopped") {
+                dc.close();
+                dc = null;
+                pc.close();
+                pc = null;
+
                 console.log("Session ended.");
                 appendOrUpdateLog("Session ended.", "system-message");
                 startButtonEl.disabled = false;
