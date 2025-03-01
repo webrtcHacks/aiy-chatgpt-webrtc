@@ -80,7 +80,7 @@
 
 <body>
 <h1>Chat with GPT-4 Realtime and WebRTC</h1>
-<p>Press the physical button to start/end a session.</p>
+<p>Click below start/end a session. You must configure your OpenAI API key by clicking on settings first. </p>
 
 <!-- Buttons for session control and settings -->
 <button id="startButton">🟢 Start Session</button>
@@ -143,7 +143,6 @@
 -->
 <script id="rtc-logic">
     // Global references
-    let ws;            // WebSocket
     let pc;            // RTCPeerConnection
     let localTrack;    // Local audio track
     let dc;            // Data channel
@@ -159,13 +158,6 @@
             description: "the user would like to stop interacting with the Agent",
             parameters: {},
         },
-        {
-            type: "function",
-            name: "power_down",
-            description: "Triggers a system power-down when the user wants to turn off the computer. " +
-                "Always ask for confirmation before executing.",
-            parameters: {}
-        }
     ];
 
 
@@ -250,13 +242,11 @@
             case "response.function_call_arguments.done":
                 const {name} = message;
                 if (name === "end_session") {
-                    console.log("User confirmed end session");
-                    ws.send(JSON.stringify({type: "end_session"}));
+                    console.log("Ending session based on user request");
                     endSession();
-                } else if (name === "power_down") {
-                    console.log("User confirmed power down");
-                    ws.send(JSON.stringify({type: "power_down"}));
-                    endSession("Tell the user they will need to turn the system back on to start a new chat.");
+                } else if (name === "close_tab") {
+                    console.log("User confirmed closing tab");
+                    endSession("Tell the user they will need to navigate back to this page to start a new chat.");
                 }
                 break;
 
@@ -298,9 +288,8 @@
             document.body.appendChild(audioEl);
 
             // On receiving remote track
-            pc.ontrack = (e) => {
-                audioEl.srcObject = e.streams[0];
-            };
+            pc.ontrack = (e) => audioEl.srcObject = e.streams[0];
+
 
             // Get local mic
             const stream = await navigator.mediaDevices.getUserMedia({audio: true})
@@ -314,6 +303,7 @@
 
             if (!stream) {
                 // If no stream, something went wrong (permissions?)
+                console.error("Failed to get local stream");
                 return;
             }
             localTrack = stream.getTracks()[0];
@@ -358,14 +348,13 @@
                 appendOrUpdateLog("Session started.", "system-message");
             };
 
-            // Create offer & get an answer from OpenAI
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
+            // implicit setLocalDescription style
+            await pc.setLocalDescription();
 
             const baseUrl = "https://api.openai.com/v1/realtime";
             const sdpResp = await fetch(`${baseUrl}?model=${model}`, {
                 method: "POST",
-                body: offer.sdp,
+                body: pc.localDescription.sdp,
                 headers: {
                     Authorization: `Bearer ${ephemeralKey}`,
                     "Content-Type": "application/sdp"
@@ -398,14 +387,15 @@
 
     /**
      * End the current session, optionally sending instructions for a closing message.
+     * @param {string} instructions - Instructions for the closing message.
      */
-    async function endSession(instructions) {
+    async function endSession(instructions = "") {
         console.log("Ending session...");
         const message = {
             type: "response.create",
             response: {
                 modalities: ["text", "audio"],
-                instructions: endInstructionsEl.value || defaultEndInstructions,
+                instructions: instructions || endInstructionsEl.value || defaultEndInstructions,
                 temperature: parseFloat(temperatureEl.value),
                 max_output_tokens: 200
             }
@@ -447,7 +437,6 @@
      - references to DOM elements
      - load/save settings
      - button event handlers
-     - WebSocket init
      ...
 -->
 <script id="ui-logic">
@@ -639,41 +628,7 @@
         }
     });
 
-    /**
-     * Initialize the WebSocket connection to the server (for detecting button press, etc.).
-     */
-    function initWebSocket() {
-        ws = new WebSocket('ws://' + window.location.host + '/ws');
-        ws.onopen = () => {
-            console.log("WebSocket connected");
-            ws.send(JSON.stringify({type: "page_loaded"}));
-        };
-        ws.onmessage = async (event) => {
-            const msg = JSON.parse(event.data);
-            if (msg.type === "button_press") {
-                // Toggles session start/end
-                if (!pc) {
-                    startButtonEl.hidden = true;
-                    endButtonEl.hidden = false;
-                    await startSession();
-                } else {
-                    startButtonEl.hidden = false;
-                    endButtonEl.hidden = true;
-                    await endSession();
-                }
-            } else {
-                console.log("Unknown ws message:", msg);
-            }
-        };
-        ws.onerror = (err) => console.error("WebSocket error:", err);
-        ws.onclose = () => console.log("WebSocket closed");
-    }
-
-    // On window load, initialize settings and the WebSocket
-    window.addEventListener("load", () => {
-        loadSettings();
-        initWebSocket();
-    });
+    loadSettings();
 </script>
 
 </body>
