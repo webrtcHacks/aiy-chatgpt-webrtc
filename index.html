@@ -79,7 +79,7 @@
 </head>
 
 <body>
-<h1>Chat with GPT-4 Realtime and WebRTC</h1>
+<h1>Chat with GPT-4 Realtime with WebRTC</h1>
 <p>Click below start/end a session. You must configure your OpenAI API key by clicking on settings first. </p>
 
 <!-- Buttons for session control and settings -->
@@ -142,12 +142,13 @@
      ...
 -->
 <script id="rtc-logic">
-    // Global references
+    // Globals
     let pc;            // RTCPeerConnection
-    let localTrack;    // Local audio track
+    let track;         // Local audio track
     let dc;            // Data channel
     const assistantResults = {}; // Track interim/final transcripts
     const userMessages = {};     // Track user messages per item ID
+
 
     // Model & function definitions
     const model = "gpt-4o-mini-realtime-preview";
@@ -198,7 +199,7 @@
             return key;
         } catch (error) {
             console.error("Error fetching ephemeral key:", error);
-            return null;
+            return error;
         }
     }
 
@@ -207,7 +208,6 @@
      */
     function handleMessage(event) {
         const message = JSON.parse(event.data);
-        console.info("Message from GPT server:", message);
         const itemId = message.item_id;
 
         switch (message.type) {
@@ -252,7 +252,7 @@
 
             default:
                 // For debugging
-                // console.log("Unhandled message type:", message.type);
+                console.info(`Unhandled message from server: ${message.type}`, message);
                 break;
         }
     }
@@ -271,13 +271,15 @@
             return;
         }
 
+        // An ephemeral key is required to start a session
+        // Usually this should be requested from your server to avoid exposing the OPENAI_API_KEY
         const ephemeralKey = await fetchEphemeralKey(apiKey);
-        if (!ephemeralKey) {
-            startButtonEl.hidden = false;
-            endButtonEl.hidden = true;
-            return;
+        if (!ephemeralKey || ephemeralKey === "error") {
+          toggleSessionButtons(false);
+          return;
         }
 
+        // Start the WebRTC session
         try {
             // Create PeerConnection
             pc = new RTCPeerConnection();
@@ -290,35 +292,27 @@
             // On receiving remote track
             pc.ontrack = (e) => audioEl.srcObject = e.streams[0];
 
-
-            // Get local mic
-            const stream = await navigator.mediaDevices.getUserMedia({audio: true})
-                .catch(err => {
-                    console.error("Error accessing mic:", err);
-                    appendOrUpdateLog("Mic access error. Check permissions.", "system-message");
-                    startButtonEl.disabled = false;
-                    startButtonEl.hidden = false;
-                    endButtonEl.hidden = true;
-                });
-
-            if (!stream) {
-                // If no stream, something went wrong (permissions?)
-                console.error("Failed to get local stream");
-                return;
+            // Get local mic and add to PeerConnection
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+                if (!stream) {
+                    console.error("Failed to get local stream");
+                    return;
+                }
+                track = stream.getTracks()[0];
+                pc.addTrack(track, stream);
+            } catch (err) {
+                console.error("Error accessing mic:", err);
+                appendOrUpdateLog("Mic access error. Check permissions.", "system-message");
+                toggleSessionButtons(false);
             }
-            localTrack = stream.getTracks()[0];
-            pc.addTrack(localTrack);
 
             // Create data channel once
-            if (!dc) {
-                dc = pc.createDataChannel("oai-events");
-                dc.addEventListener("message", handleMessage);
-            } else {
-                console.log("Data channel already exists");
-            }
+            dc = pc.createDataChannel("oai-events");
+            dc.addEventListener("message", handleMessage);
 
             // Send session instructions upon opening the data channel
-            dc.onopen = () => {
+            dc.addEventListener("open", () => {
                 const sessionInstruct = localStorage.getItem("sessionInstructions") || "You are a friendly assistant";
                 const startInstruct = localStorage.getItem("startInstructions") || "Greet the user and ask how you can help";
                 const temperature = parseFloat(localStorage.getItem("temperature")) || 0.7;
@@ -346,7 +340,7 @@
                 };
                 dc.send(JSON.stringify(startMessage));
                 appendOrUpdateLog("Session started.", "system-message");
-            };
+            });
 
             // implicit setLocalDescription style
             await pc.setLocalDescription();
@@ -366,22 +360,16 @@
             const answer = {type: "answer", sdp: await sdpResp.text()};
             await pc.setRemoteDescription(answer);
 
-            startButtonEl.disabled = false;
-            startButtonEl.hidden = true;
-            endButtonEl.hidden = false;
+            toggleSessionButtons(true);
 
             console.log("Realtime session started!");
         } catch (err) {
             console.error("Error starting session:", err);
             appendOrUpdateLog("Error starting session. Please try again.", "system-message");
-            if (pc) {
+            if (pc?.connectionState !== "closed") {
                 pc.close();
-                pc = null;
-                dc = null;
             }
-            startButtonEl.disabled = false;
-            startButtonEl.hidden = false;
-            endButtonEl.hidden = true;
+            toggleSessionButtons(false);
         }
     }
 
@@ -405,9 +393,8 @@
         }
 
         // Turn off mic
-        if (localTrack) {
-            localTrack.stop();
-            localTrack = null;
+        if (track.status !== "ended") {
+            track.stop();
         }
 
         endButtonEl.disabled = true;
@@ -416,17 +403,11 @@
         dc.addEventListener("message", (event) => {
             const message = JSON.parse(event.data);
             if (message.type === "output_audio_buffer.stopped") {
-                dc.close();
-                dc = null;
                 pc.close();
-                pc = null;
 
                 console.log("Session ended.");
                 appendOrUpdateLog("Session ended.", "system-message");
-                startButtonEl.disabled = false;
-                startButtonEl.hidden = false;
-                endButtonEl.hidden = true;
-
+                toggleSessionButtons(false);
             }
         });
     }
@@ -467,6 +448,18 @@
     const defaultEndInstructions = "Give a quick good-bye. Sometimes remind the user to press the button to start a new session.";
     const defaultTemperature = 0.7;
     const defaultVoice = "alloy";
+
+
+    /**
+     * Toggle the session control buttons based on the session state.
+     * @param {boolean} isSessionActive - Whether a session is currently active.
+     */
+    function toggleSessionButtons(isSessionActive) {
+        [startButtonEl, endButtonEl].forEach(button => {
+            button.hidden = (button === startButtonEl) ? isSessionActive : !isSessionActive;
+            button.disabled = (button === startButtonEl) ? isSessionActive : false;
+        });
+    }
 
     /**
      * Insert a new log entry or update an existing one (by messageId).
@@ -565,7 +558,7 @@
                 clearTimeout(window.autoSaveTimeout);
                 window.autoSaveTimeout = setTimeout(autoSaveSettings, 2000);
             });
-    });
+        });
 
     /**
      * Send the user's typed message to the GPT server over the data channel.
@@ -593,24 +586,22 @@
 
     // Button event handlers for starting / ending sessions
     startButtonEl.addEventListener("click", async () => {
-        if (pc) {
+        if (pc?.connectionState === "connected") {
             console.log("Session already started");
             appendOrUpdateLog("Session already started.", "system-message");
             return;
         }
-        startButtonEl.hidden = true;
-        endButtonEl.hidden = false;
+        toggleSessionButtons(true);
         await startSession();
     });
 
     endButtonEl.addEventListener("click", async () => {
-        if (!pc) {
-            console.log("No session to end");
+        if (pc?.connectionState === "closed") {
+            console.log(`No session to end. Connection state: ${pc.connectionState}`);
             appendOrUpdateLog("No session to end.", "system-message");
             return;
         }
-        startButtonEl.hidden = false;
-        endButtonEl.hidden = true;
+        toggleSessionButtons(false);
         await endSession();
     });
 
