@@ -1,0 +1,31 @@
+@startuml
+participant "index.html" as Client
+participant "OpenAI" as API
+
+
+== Session Start ==
+Client -> Client: User clicks "Start Session"
+Client -> API: Fetch Token
+API -> Client: Token
+Client -> Client: Acquire local audio (getUserMedia())
+Client -> Client: Create RTCPeerConnection & DataChannel
+Client -> Client: setLocalDescription()
+Client -> API: HTTP POST (offer.sdp, API key, etc.)
+API -> Client: SDP Answer
+Client -> Client: setRemoteDescription(answer)
+Client->API: addTrack(): send local audio
+API->Client: Remote audio (pcm16)
+Client -> Client: ontrack() - attach remote audio stream to <audio>
+Client -> Client: DataChannel onopen event fires
+Client -> Client: Send "session.update" & "start instructions" via DataChannel
+
+== During Session ==
+API -> Client: DataChannel messages\n(audio transcript delta,\nfinal transcript, function call responses)
+Client -> API: DataChannel system message updates
+
+== Session End ==
+Client -> Client: User clicks "End Session"
+Client -> API: Send "final goodbye" message via DataChannel
+Client -> Client: Stop local audio & (after delay) Close RTCPeerConnection
+Client -> Client: Log "Session ended."
+@endumlml
