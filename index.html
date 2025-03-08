@@ -75,6 +75,34 @@
             color: #f9f9f9;
             border: 1px solid #666;
         }
+
+        .audio-container {
+            margin: 10px 0;
+            padding: 8px;
+            background: #333;
+            border: 1px solid #444;
+            border-radius: 4px;
+        }
+
+        .volume-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        #volumeSlider {
+            width: 100px;
+            accent-color: #555;
+        }
+
+        #muteButton {
+            padding: 4px 8px;
+            margin-right: 8px;
+            background: #444;
+            border: 1px solid #555;
+            border-radius: 4px;
+            cursor: pointer;
+        }
     </style>
 </head>
 
@@ -123,6 +151,16 @@
     <span id="autoSaveStatus"></span>
 </div>
 
+<!-- Audio element for remote audio -->
+<div class="audio-container">
+    <audio id="remoteAudio" autoplay></audio>
+    <div class="volume-control">
+        <label for="volumeSlider">Assistant Audio Control: </label>
+        <button id="muteButton">🔊</button>
+        <input type="range" id="volumeSlider" min="0" max="1" step="0.1" value="1">
+    </div>
+</div>
+
 <!-- Log container with an input field at the bottom -->
 <div id="log">
     <div id="inputContainer">
@@ -143,12 +181,16 @@
 -->
 <script id="rtc-logic">
     // Globals
-    let pc;            // RTCPeerConnection
-    let track;         // Local audio track
-    let dc;            // Data channel
+    let pc;                      // RTCPeerConnection
+    let track;                   // Local audio track
+    let dc;                      // Data channel
     const assistantResults = {}; // Track interim/final transcripts
     const userMessages = {};     // Track user messages per item ID
 
+    // Expose to console for debugging & fun
+    window.pc = pc;
+    window.track = track;
+    window.dc = dc;
 
     // Model & function definitions
     const model = "gpt-4o-mini-realtime-preview";
@@ -174,7 +216,6 @@
             const payload = {
                 model: model,
                 voice: voiceEl.value,
-                input_audio_format: "pcm16",
                 input_audio_transcription: {model: "whisper-1"},
                 instructions: sessionInstructionsEl.value
             };
@@ -244,9 +285,6 @@
                 if (name === "end_session") {
                     console.log("Ending session based on user request");
                     endSession();
-                } else if (name === "close_tab") {
-                    console.log("User confirmed closing tab");
-                    endSession("Tell the user they will need to navigate back to this page to start a new chat.");
                 }
                 break;
 
@@ -268,6 +306,7 @@
         if (!apiKey || apiKey === "Your OPENAI_API_KEY from platform.openai.com") {
             console.error("No OpenAI API Key provided");
             appendOrUpdateLog("Error: No OpenAI API Key provided.", "system-message");
+            toggleSessionButtons(false);
             return;
         }
 
@@ -275,8 +314,25 @@
         // Usually this should be requested from your server to avoid exposing the OPENAI_API_KEY
         const ephemeralKey = await fetchEphemeralKey(apiKey);
         if (!ephemeralKey || ephemeralKey === "error") {
-          toggleSessionButtons(false);
-          return;
+            toggleSessionButtons(false);
+            return;
+        }
+
+        // Capture the local mic
+        // technically optional for the API, but required in this example
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({audio: true});
+            if (!stream) {
+                console.error("Failed to get local stream");
+                return;
+            }
+            track = stream.getTracks()[0];
+        } catch (err) {
+            console.error("Error accessing mic:", err);
+            appendOrUpdateLog("Mic access error. Check permissions.", "system-message");
+            toggleSessionButtons(false);
+            return;
         }
 
         // Start the WebRTC session
@@ -285,31 +341,15 @@
             pc = new RTCPeerConnection();
 
             // Create an audio element for the remote track
-            const audioEl = document.createElement("audio");
-            audioEl.autoplay = true;
-            document.body.appendChild(audioEl);
+            const audioEl = document.querySelector("audio");
 
             // On receiving remote track
             pc.ontrack = (e) => audioEl.srcObject = e.streams[0];
+            // Add the local audio track and reference to its source stream
+            pc.addTrack(track, stream);
 
-            // Get local mic and add to PeerConnection
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({audio: true});
-                if (!stream) {
-                    console.error("Failed to get local stream");
-                    return;
-                }
-                track = stream.getTracks()[0];
-                pc.addTrack(track, stream);
-            } catch (err) {
-                console.error("Error accessing mic:", err);
-                appendOrUpdateLog("Mic access error. Check permissions.", "system-message");
-                toggleSessionButtons(false);
-            }
-
-            // Create data channel once
+            // Create data channel
             dc = pc.createDataChannel("oai-events");
-            dc.addEventListener("message", handleMessage);
 
             // Send session instructions upon opening the data channel
             dc.addEventListener("open", () => {
@@ -342,9 +382,13 @@
                 appendOrUpdateLog("Session started.", "system-message");
             });
 
+            // Handle incoming messages from the server
+            dc.addEventListener("message", handleMessage);
+
             // implicit setLocalDescription style
             await pc.setLocalDescription();
 
+            // Create answer
             const baseUrl = "https://api.openai.com/v1/realtime";
             const sdpResp = await fetch(`${baseUrl}?model=${model}`, {
                 method: "POST",
@@ -377,13 +421,13 @@
      * End the current session, optionally sending instructions for a closing message.
      * @param {string} instructions - Instructions for the closing message.
      */
-    async function endSession(instructions = "") {
+    async function endSession(instructions = endInstructionsEl.value || defaultEndInstructions) {
         console.log("Ending session...");
         const message = {
             type: "response.create",
             response: {
                 modalities: ["text", "audio"],
-                instructions: instructions || endInstructionsEl.value || defaultEndInstructions,
+                instructions: instructions,
                 temperature: parseFloat(temperatureEl.value),
                 max_output_tokens: 200
             }
@@ -436,6 +480,9 @@
     const autoSaveStatusEl = $("autoSaveStatus");
     const settingsButtonEl = $("settingsButton");
     const settingsFormEl = $("settingsForm");
+    const remoteAudio = $('remoteAudio');
+    const muteButton = $('muteButton');
+    const volumeSlider = $('volumeSlider');
     const logEl = $("log");
     const inputContainerEl = $("inputContainer");
     const textInputEl = $("textInput");
@@ -448,6 +495,19 @@
     const defaultEndInstructions = "Give a quick good-bye. Sometimes remind the user to press the button to start a new session.";
     const defaultTemperature = 0.7;
     const defaultVoice = "alloy";
+
+
+    // Volume controls
+    volumeSlider.addEventListener('input', (e) => {
+        remoteAudio.volume = e.target.value;
+    });
+
+    let isMuted = false;
+    muteButton.addEventListener('click', () => {
+        isMuted = !isMuted;
+        remoteAudio.muted = isMuted;
+        muteButton.textContent = isMuted ? '🔇' : '🔊';
+    });
 
 
     /**
