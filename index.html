@@ -76,6 +76,7 @@
             border: 1px solid #666;
         }
 
+        /* Remote audio control styling */
         .audio-container {
             margin: 10px 0;
             padding: 8px;
@@ -122,7 +123,7 @@
            value="Your OPENAI_API_KEY from platform.openai.com">
     <br>
     <label for="temperature">Temperature: </label>
-    <input id="temperature" type="number" step="0.1" min="0" max="1" placeholder="Temperature" value="0.7"
+    <input id="temperature" type="number" step="0.1" min="0" max="2" placeholder="Temperature" value="1.0"
            style="width: 60px">
     <br>
     <label for="voice">Select Voice: </label>
@@ -215,9 +216,11 @@
             };
             const payload = {
                 model: model,
-                voice: voiceEl.value,
-                input_audio_transcription: {model: "whisper-1"},
-                instructions: sessionInstructionsEl.value
+                // expires_at: Math.floor(Date.now() / 1000) + 60,  // #Fail - unknown parameter!
+                // load these later
+                // voice: voiceEl.value,
+                // input_audio_transcription: {model: "whisper-1"},
+                // instructions: sessionInstructionsEl.value
             };
 
             const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
@@ -231,17 +234,57 @@
                 return null;
             }
             const data = await response.json();
-            const key = data?.client_secret?.value;
-            if (!key) {
+            const token = data?.client_secret?.value;
+            if (!token) {
                 console.error("Invalid response format:", data);
                 return null;
             }
-            console.log("Received ephemeral key:", key);
-            return key;
+            // For debugging - don't make this easy to abuse
+            console.log(`Received ephemeral key: ${token} will expire at ${new Date(data?.client_secret?.expires_at * 1000)
+                .toLocaleString()}`, data);
+            return token;
         } catch (error) {
             console.error("Error fetching ephemeral key:", error);
             return error;
         }
+    }
+
+
+    /**
+     * Send initial session instructions and start message.
+     * This is called when the data channel is opened.
+     * @returns {void}
+     */
+    function sessionStartMessages() {
+        const sessionInstruct = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
+        const startInstruct = localStorage.getItem("startInstructions") || defaultStartInstructions;
+        const temperature = parseFloat(localStorage.getItem("temperature")) || defaultTemperature;
+
+        // Update the session
+        const systemMessage = {
+            type: "session.update",
+            session: {
+                instructions: sessionInstruct,
+                voice: voiceEl.value,
+                tools: gptFunctions,
+                tool_choice: "auto",
+                input_audio_transcription: {model: "whisper-1"},
+                temperature: temperature,
+            }
+        };
+        dc.send(JSON.stringify(systemMessage));
+
+        // Start instructions
+        const startMessage = {
+            type: "response.create",
+            response: {
+                modalities: ["text", "audio"],
+                instructions: startInstruct,
+                max_output_tokens: 100
+            }
+        };
+        dc.send(JSON.stringify(startMessage));
+        appendOrUpdateLog("Session started.", "system-message");
     }
 
     /**
@@ -312,8 +355,8 @@
 
         // An ephemeral key is required to start a session
         // Usually this should be requested from your server to avoid exposing the OPENAI_API_KEY
-        const ephemeralKey = await fetchEphemeralKey(apiKey);
-        if (!ephemeralKey || ephemeralKey === "error") {
+        const ephemeralToken = await fetchEphemeralKey(apiKey);
+        if (!ephemeralToken || ephemeralToken === "error") {
             toggleSessionButtons(false);
             return;
         }
@@ -327,7 +370,7 @@
                 console.error("Failed to get local stream");
                 return;
             }
-            track = stream.getTracks()[0];
+            [track] = stream.getAudioTracks();
         } catch (err) {
             console.error("Error accessing mic:", err);
             appendOrUpdateLog("Mic access error. Check permissions.", "system-message");
@@ -340,47 +383,16 @@
             // Create PeerConnection
             pc = new RTCPeerConnection();
 
-            // Create an audio element for the remote track
-            const audioEl = document.querySelector("audio");
-
             // On receiving remote track
-            pc.ontrack = (e) => audioEl.srcObject = e.streams[0];
+            pc.ontrack = (e) => remoteAudioEl.srcObject = e.streams[0];
             // Add the local audio track and reference to its source stream
             pc.addTrack(track, stream);
 
             // Create data channel
-            dc = pc.createDataChannel("oai-events");
+            dc = pc.createDataChannel("oai");
 
             // Send session instructions upon opening the data channel
-            dc.addEventListener("open", () => {
-                const sessionInstruct = localStorage.getItem("sessionInstructions") || "You are a friendly assistant";
-                const startInstruct = localStorage.getItem("startInstructions") || "Greet the user and ask how you can help";
-                const temperature = parseFloat(localStorage.getItem("temperature")) || 0.7;
-
-                // Update the session
-                const systemMessage = {
-                    type: "session.update",
-                    session: {
-                        instructions: sessionInstruct,
-                        tools: gptFunctions,
-                        tool_choice: "auto"
-                    }
-                };
-                dc.send(JSON.stringify(systemMessage));
-
-                // Start instructions
-                const startMessage = {
-                    type: "response.create",
-                    response: {
-                        modalities: ["text", "audio"],
-                        instructions: startInstruct,
-                        temperature: temperature,
-                        max_output_tokens: 100
-                    }
-                };
-                dc.send(JSON.stringify(startMessage));
-                appendOrUpdateLog("Session started.", "system-message");
-            });
+            dc.addEventListener("open", () => sessionStartMessages());
 
             // Handle incoming messages from the server
             dc.addEventListener("message", handleMessage);
@@ -390,22 +402,32 @@
 
             // Create answer
             const baseUrl = "https://api.openai.com/v1/realtime";
-            const sdpResp = await fetch(`${baseUrl}?model=${model}`, {
+            const response = await fetch(`${baseUrl}?model=${model}`, {
                 method: "POST",
                 body: pc.localDescription.sdp,
                 headers: {
-                    Authorization: `Bearer ${ephemeralKey}`,
+                    Authorization: `Bearer ${ephemeralToken}`,
                     "Content-Type": "application/sdp"
                 },
             });
-            if (!sdpResp.ok) {
-                console.error("Failed to fetch SDP answer:", await sdpResp.text());
+            if (!response.ok) {
+                console.error("Failed to fetch SDP answer:", await response.text());
             }
-            const answer = {type: "answer", sdp: await sdpResp.text()};
+            const answer = {type: "answer", sdp: await response.text()};
             await pc.setRemoteDescription(answer);
 
-            toggleSessionButtons(true);
+            // Wait for connection to be established before proceeding
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(`Connection timeout. Current state: ${pc.connectionState}`), 10_000);
+                pc.addEventListener("connectionstatechange", () => {
+                    if (pc.connectionState === "connected") {
+                        clearTimeout(timeout);
+                        resolve();
+                    }
+                });
+            });
 
+            toggleSessionButtons(true);
             console.log("Realtime session started!");
         } catch (err) {
             console.error("Error starting session:", err);
@@ -423,16 +445,28 @@
      */
     async function endSession(instructions = endInstructionsEl.value || defaultEndInstructions) {
         console.log("Ending session...");
-        const message = {
-            type: "response.create",
-            response: {
-                modalities: ["text", "audio"],
-                instructions: instructions,
-                temperature: parseFloat(temperatureEl.value),
-                max_output_tokens: 200
-            }
-        };
-        if (dc && dc.readyState === "open") {
+
+        if (dc?.readyState === "open") {
+            // Close after the final message
+            dc.addEventListener("message", (event) => {
+                const message = JSON.parse(event.data);
+                if (message.type === "output_audio_buffer.stopped") {
+                    pc.close();
+
+                    console.log("Session ended.");
+                    appendOrUpdateLog("Session ended.", "system-message");
+                    toggleSessionButtons(false);
+                }
+            });
+
+            const message = {
+                type: "response.create",
+                response: {
+                    modalities: ["text", "audio"],
+                    instructions: instructions,
+                    max_output_tokens: 200
+                }
+            };
             dc.send(JSON.stringify(message));
         }
 
@@ -443,17 +477,6 @@
 
         endButtonEl.disabled = true;
 
-        // Close after the final message
-        dc.addEventListener("message", (event) => {
-            const message = JSON.parse(event.data);
-            if (message.type === "output_audio_buffer.stopped") {
-                pc.close();
-
-                console.log("Session ended.");
-                appendOrUpdateLog("Session ended.", "system-message");
-                toggleSessionButtons(false);
-            }
-        });
     }
 </script>
 
@@ -480,7 +503,7 @@
     const autoSaveStatusEl = $("autoSaveStatus");
     const settingsButtonEl = $("settingsButton");
     const settingsFormEl = $("settingsForm");
-    const remoteAudio = $('remoteAudio');
+    const remoteAudioEl = $('remoteAudio');
     const muteButton = $('muteButton');
     const volumeSlider = $('volumeSlider');
     const logEl = $("log");
@@ -493,19 +516,18 @@
     const defaultSessionInstructions = "You are a friendly assistant";
     const defaultStartInstructions = "Greet the user and ask how you can help";
     const defaultEndInstructions = "Give a quick good-bye. Sometimes remind the user to press the button to start a new session.";
-    const defaultTemperature = 0.7;
+    const defaultTemperature = 1.0;
     const defaultVoice = "alloy";
 
 
     // Volume controls
-    volumeSlider.addEventListener('input', (e) => {
-        remoteAudio.volume = e.target.value;
-    });
+    volumeSlider.addEventListener('input', (e) => remoteAudioEl.volume = e.target.value);
 
+    // Mute button
     let isMuted = false;
     muteButton.addEventListener('click', () => {
         isMuted = !isMuted;
-        remoteAudio.muted = isMuted;
+        remoteAudioEl.muted = isMuted;
         muteButton.textContent = isMuted ? '🔇' : '🔊';
     });
 
@@ -523,6 +545,9 @@
 
     /**
      * Insert a new log entry or update an existing one (by messageId).
+     * @param {string} message - The message to log.
+     * @param {string} className - Optional CSS class for styling
+     * @param {string} messageId - Optional ID to update an existing log entry.
      */
     function appendOrUpdateLog(message, className = "", messageId = null) {
         let logEntry;
@@ -542,6 +567,8 @@
 
     /**
      * Load settings from localStorage into UI fields.
+     * If not set, use default values.
+     * @returns {void}
      */
     function loadSettings() {
         keyEl.value = localStorage.getItem("openaiApiKey") || defaultKey;
@@ -554,6 +581,7 @@
 
     /**
      * Autosave changed settings to localStorage (debounced by 2s).
+     * @returns {void}
      */
     function autoSaveSettings() {
         const settings = {
@@ -573,6 +601,7 @@
 
     /**
      * Reset settings and re-save them to localStorage.
+     * @returns {void}
      */
     function resetSettings() {
         const settings = {
@@ -591,6 +620,7 @@
 
     /**
      * Send updated session instructions to the GPT server (if data channel is open).
+     * @returns {void}
      */
     function sendNewSettings() {
         if (dc && dc.readyState === "open") {
@@ -622,6 +652,7 @@
 
     /**
      * Send the user's typed message to the GPT server over the data channel.
+     * @returns {void}
      */
     function sendText() {
         const text = textInputEl.value.trim();
@@ -655,6 +686,7 @@
         await startSession();
     });
 
+    // End session button - cancel any in-progress response and close the session
     endButtonEl.addEventListener("click", async () => {
         if (pc?.connectionState === "closed") {
             console.log(`No session to end. Connection state: ${pc.connectionState}`);
@@ -662,6 +694,8 @@
             return;
         }
         toggleSessionButtons(false);
+        // cancel any in-progress response - not needed for speech input due to turn detection
+        dc.send(JSON.stringify({type: "response.cancel"}));
         await endSession();
     });
 
