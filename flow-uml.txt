@@ -1,31 +1,38 @@
 @startuml
+
 participant "index.html" as Client
 participant "OpenAI" as API
 
-
-== Session Start ==
 Client -> Client: User clicks "Start Session"
-Client -> API: Fetch Token
-API -> Client: Token
+== Session Start ==
 Client -> Client: Acquire local audio (getUserMedia())
-Client -> Client: Create RTCPeerConnection & DataChannel
+Client -> Client: Create RTCPeerConnection
+Client -> Client: Create DataChannel
+Client -> API: addTrack(): attach local audio to RTCPeerConnection
 Client -> Client: setLocalDescription()
-Client -> API: HTTP POST (offer.sdp, API key, etc.)
+Client -> API: HTTP POST (localDescription.sdp, API key)
 API -> Client: SDP Answer
 Client -> Client: setRemoteDescription(answer)
-Client->API: addTrack(): send local audio
-API->Client: Remote audio (pcm16)
-Client -> Client: ontrack() - attach remote audio stream to <audio>
+Client -> API: WebRTC: local audio stream
+API -> Client: WebRTC: remote audio stream
+Client -> Client: ontrack() attaches remote audio stream to <audio>
+Client <-> API: DataChannel connected
 Client -> Client: DataChannel onopen event fires
-Client -> Client: Send "session.update" & "start instructions" via DataChannel
+Client -> API: DataChannel: "session.update" with session params:\n  instructions, voice, functions, temperature
+Client -> API: DataChannel: "response.create" with start instructions
+API --> Client: Welcome audio according to start instructions
 
 == During Session ==
-API -> Client: DataChannel messages\n(audio transcript delta,\nfinal transcript, function call responses)
+Client --> API: User audio requests to agent
+API --> Client: Agent audio responses
+API -> Client: DataChannel messages:\n  audio buffer changes, transcripts, function calls
 Client -> API: DataChannel system message updates
 
 == Session End ==
-Client -> Client: User clicks "End Session"
-Client -> API: Send "final goodbye" message via DataChannel
-Client -> Client: Stop local audio & (after delay) Close RTCPeerConnection
-Client -> Client: Log "Session ended."
+Client --> API: User asks to end session
+API -> Client: "end_session" function call response
+Client -> API: DataChannel: "response.create" with end instructions
+API --> Client: Goodbye audio
+API -> Client: DataChannel: "output_audio_buffer.stopped"
+Client -> Client: Close RTCPeerConnection after audio done
 @endumlml
