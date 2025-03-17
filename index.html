@@ -250,6 +250,12 @@
         const itemId = message.item_id;
 
         switch (message.type) {
+            case "session.created":
+                const expiresAt = new Date(message?.session?.expires_at * 1000);
+                console.log(`Session created and will expire at ${expiresAt}`, message);
+                toggleSessionButtons(true);
+                break;
+
             case "input_audio_buffer.speech_started":
                 userMessages[itemId] = {message: ""};
                 appendOrUpdateLog(`User: ...`, "user-message", itemId);
@@ -300,6 +306,7 @@
         console.log("start_session");
         startButtonEl.disabled = true;
 
+        // API Key required
         const apiKey = keyEl.value;
         if (!apiKey || apiKey === "Your OPENAI_API_KEY from platform.openai.com") {
             console.error("No OpenAI API Key provided");
@@ -307,7 +314,6 @@
             toggleSessionButtons(false);
             return;
         }
-
 
         // Capture the local mic
         // technically optional for the API, but required in this example
@@ -370,13 +376,13 @@
                 pc.addEventListener("connectionstatechange", () => {
                     if (pc.connectionState === "connected") {
                         clearTimeout(timeout);
+                        console.log("Peer connection established!");
                         resolve();
                     }
                 });
             });
 
-            toggleSessionButtons(true);
-            console.log("Realtime session started!");
+            // toggleSessionButtons(true);
         } catch (err) {
             console.error("Error starting session:", err);
             appendOrUpdateLog("Error starting session. Please try again.", "system-message");
