@@ -1,22 +1,16 @@
 import os
 import threading
-import requests
-from time import sleep
-from dotenv import load_dotenv
-from gpiozero import PWMLED, Button
-import asyncio
-import websockets
 import json
 import subprocess
-import http.server
-import socketserver
+import asyncio
+from time import sleep
+from gpiozero import PWMLED, Button
+from aiohttp import web, WSMsgType
 
 #######################################
 # Configuration and Global State
 #######################################
-HTTP_PORT = 3000
-WS_PORT = 3001
-
+PORT = 3000
 LED_PIN = 25
 BUTTON_PIN = 23
 
@@ -27,13 +21,7 @@ led_mode = "waiting"  # Start with LED in "waiting" state
 session_active = False
 
 connected_clients = set()
-main_loop = None  # We'll store the main event loop here
-
-load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY is not set in the .env file")
-
+main_loop = None  # Store main event loop here
 
 #######################################
 # LED Behavior Thread
@@ -47,7 +35,7 @@ def run_led():
             if led_mode != "waiting":
                 continue
             led.off()
-            sleep(1)
+            sleep(3)
         elif led_mode == "error":
             led.on()
             sleep(0.5)
@@ -73,103 +61,28 @@ def run_led():
             sleep(1)
         else:
             print("ERROR: unknown LED mode:", led_mode)
-            return  # Exit thread
-
-
-#######################################
-# Button Press Callback
-#######################################
-def on_button_press():
-    global session_active, led_mode
-    print("Button pressed!")
-
-    if not session_active:
-        # Start session
-        session_active = True
-        led_mode = "active"
-        ephemeral_key = fetch_ephemeral_key()
-        broadcast_message({
-            "type": "start_session",
-            "ephemeralKey": ephemeral_key
-        })
-        print("Session started, LED pulsing.")
-    else:
-        # End session
-        session_active = False
-        led_mode = "waiting"
-        broadcast_message({
-            "type": "end_session"
-        })
-        print("Session ended, LED blinking.")
-
-
-#######################################
-# Fetch Ephemeral Key from OpenAI
-#######################################
-def fetch_ephemeral_key():
-    global led_mode
-    instructions = ("You are a friendly assistant to a 13-year old named Neev. "
-                    "Use gen-Alpha language occasionally, but mostly be professional and helpful. ")
-
-    try:
-        headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": "gpt-4o-realtime-preview-2024-12-17",
-            "voice": "alloy",
-            "input_audio_format": "pcm16",  # Supported values are: 'pcm16', 'g711_ulaw', and 'g711_alaw'
-            "input_audio_transcription": {"model": "whisper-1"},
-            "instructions": instructions,
-        }
-        resp = requests.post(
-            "https://api.openai.com/v1/realtime/sessions",
-            headers=headers,
-            json=payload,
-        )
-        if resp.status_code != 200:
-            print("Failed to create ephemeral session:", resp.text)
-            return None
-        data = resp.json()
-        return data["client_secret"]["value"]
-    except Exception as e:
-        print("Error fetching ephemeral key:", e)
-        led_mode = "error"
-        return None
-
+            return
 
 #######################################
 # Broadcast to All Connected Clients
 #######################################
 def broadcast_message(msg_dict):
-    """
-    Called from the button callback (or elsewhere).
-    We push a coroutine to the *main event loop* using run_coroutine_threadsafe.
-    """
     text_data = json.dumps(msg_dict)
-    # Use the main_loop we stored in main()
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(_async_broadcast(text_data), main_loop)
     else:
-        print("Warning: main_loop is not initialized yet; cannot broadcast.")
-
+        print("Warning: main_loop not initialized; cannot broadcast.")
 
 async def _async_broadcast(text_data):
-    """
-    Actually broadcast the message to each connected WebSocket.
-    Must run in the main event loop context.
-    """
     global led_mode
-
     if not connected_clients:
         led_mode = "error"
         return
     to_remove = []
-    for ws in connected_clients:
-        if ws.open:
+    for ws in list(connected_clients):
+        if not ws.closed:
             try:
-                await ws.send(text_data)
+                await ws.send_str(text_data)
             except Exception as e:
                 print("Error sending to client:", e)
                 led_mode = "error"
@@ -179,71 +92,94 @@ async def _async_broadcast(text_data):
     for ws in to_remove:
         connected_clients.discard(ws)
 
+#######################################
+# Button Press Callback
+#######################################
+def on_button_press():
+    global session_active, led_mode
+    print("Button pressed!")
+    if not session_active:
+        session_active = True
+        led_mode = "active"
+        broadcast_message({
+            "type": "start_session",
+        })
+        print("Session started, LED pulsing.")
+    else:
+        session_active = False
+        led_mode = "waiting"
+        broadcast_message({
+            "type": "end_session"
+        })
+        print("Session ended, LED blinking.")
 
 #######################################
-# WebSocket Handler on port 3001
+# HTTP Request Handler (Serving index.html)
 #######################################
-async def handler(websocket, path):
-    global led_mode
-    print(f"New WebSocket connection from {websocket.remote_address}")
-    connected_clients.add(websocket)
+async def index_handler(request):
+    return web.FileResponse('index.html')
+
+#######################################
+# WebSocket Handler
+#######################################
+async def websocket_handler(request):
+    global session_active, led_mode
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    connected_clients.add(ws)
+    print(f"New WebSocket connection from {request.remote}")
     try:
-        async for message in websocket:
-            data = json.loads(message)
-            if data.get("type") == "page_loaded":
-                print("Page loaded")
-                led_mode = "waiting"
-    finally:
-        connected_clients.discard(websocket)
-        print(f"Client {websocket.remote_address} disconnected.")
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                    if data.get("type") == "page_loaded":
+                        print("Page loaded")
+                        led_mode = "waiting"
+                    elif data.get("type") == "start_session":
+                        print("Start session received via websocket.")
+                        session_active = True
+                        led_mode = "active"
+                    elif data.get("type") == "end_session":
+                        print("End session received via websocket.")
+                        session_active = False
+                        led_mode = "waiting"
+                    elif data.get("type") == "shut_down":
+                        print("Shutdown received via websocket.")
+                        led_mode = "off"
+                        asyncio.get_running_loop().stop()
+                        print("Shutting down in 5 seconds...")
+                        sleep(5)
+                        os.system("sudo poweroff")
 
-
-#######################################
-# Simple HTTP Server on port 3000
-#######################################
-class ShutdownHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/powerdown":
-            self.send_response(200)
-            self.send_header("Content-type", "text/html")
-            self.end_headers()
-            self.wfile.write(b"Powering down system...")
-            # os.system("sudo shutdown now")
-        else:
-            super().do_GET()
-
-def start_http_server():
-    global led_mode
-    httpd = socketserver.TCPServer(("", HTTP_PORT), ShutdownHandler)
-    print(f"HTTP server serving at port {HTTP_PORT}")
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
+                except json.JSONDecodeError:
+                    print("Received non-JSON message:", msg.data)
+            elif msg.type == WSMsgType.ERROR:
+                print("WebSocket connection error:", ws.exception())
     except Exception as e:
-        print("HTTP server error:", e)
-        led_mode = "error"
+        print("WebSocket handler exception:", e)
     finally:
-        httpd.server_close()  # Ensures port is freed on exit
+        connected_clients.discard(ws)
+        print(f"Client {request.remote} disconnected.")
+    return ws
 
-
+#######################################
+# App Startup Callback
+#######################################
+async def on_startup(app):
+    global main_loop
+    main_loop = asyncio.get_running_loop()
+    print("Startup complete. main_loop is set.")
 
 #######################################
 # Main Entry Point
 #######################################
 def main():
-    global main_loop
-    global led_mode
-
-    # 1) Start LED thread
+    # Start LED thread
     led_thread = threading.Thread(target=run_led, daemon=True)
     led_thread.start()
 
-    # 2) Start HTTP server (serving index.html) in background
-    http_thread = threading.Thread(target=start_http_server, daemon=True)
-    http_thread.start()
-
-    # 3) Launch Chromium
+    # Launch Chromium
     os.environ["DISPLAY"] = ":0"
     chrome_args = [
         "chromium-browser",
@@ -255,42 +191,36 @@ def main():
         "--use-fake-ui-for-media-stream",
         "--disable-session-crashed-bubble",
         "--unsafely-treat-insecure-origin-as-secure=http://localhost:3000",
-        # debugging
-        # "--kiosk",    # turn off for debugging
         "--auto-open-devtools-for-tabs",
-        "--enable-logging"
+        "--enable-logging",
         f"--log-file={os.path.expanduser('~/chromium.log')}",
         "--v=1",
-        f"http://localhost:{HTTP_PORT}"
+        f"http://localhost:{PORT}"
     ]
     with open(os.path.expanduser('~/chromium_output.log'), 'w') as output_file:
         chromium_process = subprocess.Popen(chrome_args, stdout=output_file, stderr=output_file)
         print("Chromium launched...")
 
-    # 4) WebSocket server in the main thread / event loop
-    loop = asyncio.get_event_loop()
-    main_loop = loop  # store it in global variable so broadcast_message can use it
+    # Create aiohttp application with routes
+    app = web.Application()
+    app.on_startup.append(on_startup)
+    app.router.add_get('/', index_handler)
+    app.router.add_get('/ws', websocket_handler)
 
-    ws_server = websockets.serve(handler, "0.0.0.0", WS_PORT)
-    loop.run_until_complete(ws_server)
-    print(f"WebSocket server running on port {WS_PORT}...")
+    # Attach button callback
+    button.when_pressed = on_button_press
 
+    print(f"Server starting on port {PORT} (HTTP & WebSocket)...")
     try:
-        loop.run_forever()
+        web.run_app(app, port=PORT)
     except KeyboardInterrupt:
         print("Shutting down...")
-        pass
     except Exception as e:
         print("Main loop error:", e)
-        led_mode = "error"
     finally:
         led.off()
         if chromium_process:
             chromium_process.terminate()
-
-
-# Attach button callback and run
-button.when_pressed = on_button_press
 
 if __name__ == "__main__":
     main()
