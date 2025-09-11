@@ -230,7 +230,7 @@
                 temperature: temperature,
             }
         };
-        dc.send(JSON.stringify(systemMessage));
+        // dc.send(JSON.stringify(systemMessage));
 
         // Start instructions
         const startMessage = {
@@ -357,21 +357,46 @@
             // implicit setLocalDescription style
             await pc.setLocalDescription();
 
+            const session = {
+                type: "realtime",
+                model: model,
+                instructions: sessionInstructionsEl.value,
+                audio: {
+                    input: {},
+                    output: {
+                        // format: "pcm", // "pcm" or "mulaw"
+                        // sample_rate: 16000,
+                        // speed: 1.0,
+                        voice: voiceEl.value,
+                    }
+                }
+            };
+
+            const fd = new FormData();
+            fd.set("sdp", pc.localDescription.sdp);
+            fd.set("session", JSON.stringify(session));
+
+
             // Create answer
-            const baseUrl = "https://api.openai.com/v1/realtime";
-            const response = await fetch(`${baseUrl}?model=${model}`, {
+            const baseUrl = "https://api.openai.com/v1/realtime/calls";
+            const response = await fetch(`${baseUrl}`, { //?model=${model}`, {
                 method: "POST",
-                body: pc.localDescription.sdp,
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    "Content-Type": "application/sdp"
-                },
+                headers: {Authorization: `Bearer ${apiKey}`},
+                body: fd
             });
             if (!response.ok) {
                 console.error("Failed to fetch SDP answer:", await response.text());
             }
-            const answer = {type: "answer", sdp: await response.text()};
-            await pc.setRemoteDescription(answer);
+
+            // Extract call ID from the Location header - could be useful for debugging
+            const location = response.headers.get("Location");
+            const callId = location?.split("/").pop();
+            console.log("call created:", callId);
+
+            const answerSdp = await response.text();
+            // console.log("SDP answer:", answerSdp);
+
+            await pc.setRemoteDescription({type: "answer", sdp: answerSdp});
 
             // Wait for connection to be established before proceeding
             await new Promise((resolve, reject) => {
