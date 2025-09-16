@@ -89,6 +89,7 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            flex-wrap: wrap;
         }
 
         #volumeSlider {
@@ -96,20 +97,25 @@
             accent-color: #555;
         }
 
-        #muteButton {
+        #muteButton, #cameraButton {
             padding: 4px 8px;
-            margin-right: 8px;
+            margin-right: 4px;
             background: #444;
             border: 1px solid #555;
             border-radius: 4px;
             cursor: pointer;
+        }
+        #cameraButton.video-off {
+            opacity: 0.6;
         }
     </style>
 </head>
 
 <body>
 <h1>Chat with GPT-4 Realtime with WebRTC</h1>
-<p>Click below start/end a session. You must configure your OpenAI API key by clicking on settings first. </p>
+<p>Click below start/end a session. Audio and video capture are enabled by default unless you turn them off.
+    Browser permissions are required for microphone and camera access.
+    You must configure your OpenAI API key by clicking on settings first. </p>
 
 <!-- Buttons for session control and settings -->
 <button id="startButton">🟢 Start Session</button>
@@ -159,9 +165,12 @@
 <div class="audio-container">
     <audio id="remoteAudio" autoplay></audio>
     <div class="volume-control">
-        <label for="volumeSlider">Assistant Audio Control: </label>
-        <button id="muteButton">🔊</button>
+        <span id="mediaControlLabel">Assistant Media Control:</span>
+        <label for="volumeSlider" style="margin-left:8px;">Volume</label>
         <input type="range" id="volumeSlider" min="0" max="1" step="0.1" value="1">
+        <button id="muteButton" title="Toggle assistant audio playback">🔊</button>
+        <button id="cameraButton" title="Toggle camera on/off">📹</button>
+
     </div>
 </div>
 
@@ -186,14 +195,15 @@
 <script id="rtc-logic">
     // Globals
     let pc;                      // RTCPeerConnection
-    let track;                   // Local audio track
+    let audioTrack;              // Local audio track
+    let videoTrack;              // Local video track
     let dc;                      // Data channel
     const assistantResults = {}; // Track interim/final transcripts
     const userMessages = {};     // Track user messages per item ID
+    let assistantSpeaking = false; // Track if assistant is currently speaking
 
     // Expose to console for debugging & fun
     window.pc = pc;
-    window.track = track;
     window.dc = dc;
 
     // Model & function definitions
@@ -218,30 +228,15 @@
         const startInstruct = localStorage.getItem("startInstructions") || defaultStartInstructions;
         const temperature = parseFloat(localStorage.getItem("temperature")) || defaultTemperature;
 
-        // Update the session
-        const systemMessage = {
-            type: "session.update",
-            session: {
-                instructions: sessionInstruct,
-                voice: voiceEl.value,
-                tools: gptFunctions,
-                tool_choice: "auto",
-                input_audio_transcription: {model: "whisper-1"},
-                temperature: temperature,
-            }
-        };
-        // dc.send(JSON.stringify(systemMessage));
-
         // Start instructions
         const startMessage = {
             type: "response.create",
             response: {
-                modalities: ["text", "audio"],
                 instructions: startInstruct,
                 max_output_tokens: 100
             }
         };
-        // dc.send(JSON.stringify(startMessage));
+        dc.send(JSON.stringify(startMessage));
         appendOrUpdateLog("Session started.", "system-message");
     }
 
@@ -304,6 +299,16 @@
                 }
                 break;
 
+            case "output_audio_buffer.started":
+                assistantSpeaking = true;
+                console.log("🗣️ Assistant started speaking");
+                break;
+
+            case "output_audio_buffer.stopped":
+                assistantSpeaking = false;
+                console.log("🤫 Assistant ended speaking");
+                break;
+
             default:
                 // For debugging
                 console.info(`Unhandled message from server: ${message.type}`, message);
@@ -331,12 +336,14 @@
         // technically optional for the API, but required in this example
         let stream;
         try {
-            stream = await navigator.mediaDevices.getUserMedia({audio: true});
+            stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
             if (!stream) {
                 console.error("Failed to get local stream");
                 return;
             }
-            [track] = stream.getAudioTracks();
+            [audioTrack] = stream.getAudioTracks();
+            [videoTrack] = stream.getVideoTracks();
+            window.tracks = [audioTrack, videoTrack];
         } catch (err) {
             console.error("Error accessing mic:", err);
             appendOrUpdateLog("Mic access error. Check permissions.", "system-message");
@@ -349,10 +356,15 @@
             // Create PeerConnection
             pc = new RTCPeerConnection();
 
-            // On receiving remote track
+            // On receiving remote audio track
             pc.ontrack = (e) => remoteAudioEl.srcObject = e.streams[0];
-            // Add the local audio track and reference to its source stream
-            pc.addTrack(track, stream);
+
+            // Add the local tracks and reference them to their source stream
+            if(audioTrack)
+                pc.addTrack(audioTrack, stream);
+            if(videoTrack)
+                pc.addTrack(videoTrack, stream);
+
 
             // Create data channel
             dc = pc.createDataChannel("oai");
@@ -465,9 +477,14 @@
             dc.send(JSON.stringify(message));
         }
 
-        // Turn off mic
-        if (track.status !== "ended") {
-            track.stop();
+        // Turn off mic & camera
+        if (audioTrack && audioTrack.status !== "ended") {
+            audioTrack.stop();
+            audioTrack = null;
+        }
+        if(videoTrack && videoTrack.status !== "ended") {
+            videoTrack.stop();
+            videoTrack = null;
         }
 
         endButtonEl.disabled = true;
@@ -500,6 +517,7 @@
     const settingsFormEl = $("settingsForm");
     const remoteAudioEl = $('remoteAudio');
     const muteButton = $('muteButton');
+    const cameraButton = $('cameraButton');
     const volumeSlider = $('volumeSlider');
     const logEl = $("log");
     const inputContainerEl = $("inputContainer");
@@ -516,16 +534,29 @@
 
 
     // Volume controls
+    volumeSlider.title = "Adjust assistant audio volume";
     volumeSlider.addEventListener('input', (e) => remoteAudioEl.volume = e.target.value);
 
-    // Mute button
+    // Mute (assistant playback) button
     let isMuted = false;
     muteButton.addEventListener('click', () => {
         isMuted = !isMuted;
         remoteAudioEl.muted = isMuted;
         muteButton.textContent = isMuted ? '🔇' : '🔊';
+        muteButton.title = isMuted ? 'Unmute assistant audio' : 'Mute assistant audio';
     });
 
+    // Camera (local video track) toggle
+    let cameraOn = true;
+    cameraButton.addEventListener('click', () => {
+        cameraOn = !cameraOn;
+        cameraButton.textContent = cameraOn ? '📹' : '🚫📹';
+        cameraButton.title = cameraOn ? 'Turn camera off' : 'Turn camera on';
+        cameraButton.classList.toggle('video-off', !cameraOn);
+        if (videoTrack)
+            videoTrack.enabled = cameraOn; // do not fully stop so it can be resumed quickly
+
+    });
 
     /**
      * Toggle the session control buttons based on the session state.
@@ -694,7 +725,9 @@
         }
         toggleSessionButtons(false);
         // cancel any in-progress response - not needed for speech input due to turn detection
-        dc.send(JSON.stringify({type: "response.cancel"}));
+
+        if(assistantSpeaking)
+            dc.send(JSON.stringify({type: "response.cancel"}));
         await endSession();
     });
 
