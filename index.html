@@ -241,7 +241,7 @@
                 max_output_tokens: 100
             }
         };
-        dc.send(JSON.stringify(startMessage));
+        // dc.send(JSON.stringify(startMessage));
         appendOrUpdateLog("Session started.", "system-message");
     }
 
@@ -272,7 +272,8 @@
                 }
                 break;
 
-            case "response.audio_transcript.delta":
+            // NEW: response.output_text.delta (was response.text.delta)
+            case "response.output_text.delta": // changed from "response.text.delta"
                 if (itemId) {
                     assistantResults[itemId] = assistantResults[itemId] || "";
                     assistantResults[itemId] += message.delta;
@@ -280,7 +281,15 @@
                 }
                 break;
 
-            case "response.audio_transcript.done":
+            case "response.output_audio_transcript.delta": // previously "response.audio_transcript.delta"
+                if (itemId) {
+                    assistantResults[itemId] = assistantResults[itemId] || "";
+                    assistantResults[itemId] += message.delta;
+                    appendOrUpdateLog(`Assistant (interim): ${assistantResults[itemId]}`, "interim-result", itemId);
+                }
+                break;
+
+            case "response.output_audio_transcript.done": // changed from "response.audio_transcript.done"
                 if (itemId) {
                     assistantResults[itemId] = message.transcript;
                     appendOrUpdateLog(`Assistant: ${message.transcript}`, "agent-message", itemId);
@@ -357,24 +366,29 @@
             // implicit setLocalDescription style
             await pc.setLocalDescription();
 
-            const session = {
+            const newSession = {
                 type: "realtime",
                 model: model,
                 instructions: sessionInstructionsEl.value,
                 audio: {
-                    input: {},
+                    input: {
+                        transcription: {
+                            model: "whisper-1",     // whisper-1, gpt-4o-transcribe-latest, gpt-4o-mini-transcribe, or gpt-4o-transcribe
+                        }
+                    },
                     output: {
-                        // format: "pcm", // "pcm" or "mulaw"
-                        // sample_rate: 16000,
-                        // speed: 1.0,
                         voice: voiceEl.value,
                     }
-                }
+                },
+                // tool_choice: "auto",      // was "function_call" in beta
+                tools: gptFunctions,
+                // temperature: parseFloat(temperatureEl.value), // no longer valid?
+                tracing: "auto"
             };
 
             const fd = new FormData();
             fd.set("sdp", pc.localDescription.sdp);
-            fd.set("session", JSON.stringify(session));
+            fd.set("session", JSON.stringify(newSession));
 
 
             // Create answer
@@ -444,7 +458,6 @@
             const message = {
                 type: "response.create",
                 response: {
-                    modalities: ["text", "audio"],
                     instructions: instructions,
                     max_output_tokens: 200
                 }
@@ -613,7 +626,6 @@
                     tools: gptFunctions,
                     tool_choice: "auto",
                     temperature: parseFloat(temperatureEl.value),
-                    // voice: voiceEl.value  // can't change voice mid-session
                 }
             };
             dc.send(JSON.stringify(message));
@@ -643,10 +655,15 @@
             const message = {
                 type: "response.create",
                 response: {
-                    modalities: ["text", "audio"],
-                    instructions: text,
-                    temperature: parseFloat(temperatureEl.value),
-                    max_output_tokens: 500
+                    input: [{
+                        type: "message",
+                        role: "user",
+                        content: [{
+                            type: "input_text",
+                            text: text
+                        }],
+                    }],
+                    max_output_tokens: 700
                 }
             };
             dc.send(JSON.stringify(message));
