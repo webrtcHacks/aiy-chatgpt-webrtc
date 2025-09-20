@@ -336,7 +336,13 @@
         // technically optional for the API, but required in this example
         let stream;
         try {
-            stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
+            // Updated constraints: prefer 1920x1080 at 1 fps (low fps to reduce bandwidth)
+            const videoConstraints = {
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+                frameRate: { ideal: 1}
+            };
+            stream = await navigator.mediaDevices.getUserMedia({audio: true, video: videoConstraints});
             if (!stream) {
                 console.error("Failed to get local stream");
                 return;
