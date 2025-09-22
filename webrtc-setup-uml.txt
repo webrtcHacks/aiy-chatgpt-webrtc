@@ -1,0 +1,22 @@
+@startuml
+
+participant "Browser" as Client
+participant "OpenAI" as API
+
+Client -> Client: Acquire local audio (getUserMedia())
+Client -> Client: Create RTCPeerConnection
+Client -> Client: Create DataChannel
+Client -> API: addTrack(): attach local audio to RTCPeerConnection
+Client -> Client: setLocalDescription()
+Client -> API: HTTP POST ({localDescription.sdp, session}, API key)
+API -> Client: SDP Answer
+Client -> Client: setRemoteDescription(answer)
+Client -> API: WebRTC: local audio stream
+Client -> API: WebRTC: local video stream
+API -> Client: WebRTC: remote audio stream
+Client -> Client: ontrack() attaches remote audio stream to <audio>
+Client <-> API: DataChannel connected
+Client -> Client: DataChannel onopen event fires
+API --> Client: Welcome audio according to start instructions
+
+@endumlml
