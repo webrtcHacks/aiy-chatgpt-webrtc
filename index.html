@@ -278,6 +278,16 @@
                 }
                 break;
 
+            // NEW: detect when teh video stream was viewed
+            case "conversation.item.added":
+                const contentText = message?.item?.content?.[0]?.type;
+                if(contentText === "input_image")
+                    appendOrUpdateLog(`📸 image added`, "system-message", itemId);
+                else
+                    console.info(`Unhandled ${message.type} from server: `, message);
+                break;
+
+
             // NEW: response.output_text.delta (was response.text.delta)
             case "response.output_text.delta": // changed from "response.text.delta"
                 if (itemId) {
@@ -541,7 +551,11 @@
 
     // Default values
     const defaultKey = "Your OPENAI_API_KEY from platform.openai.com";
-    const defaultSessionInstructions = "You are a friendly assistant";
+    const defaultSessionInstructions = `You are a natural, concise voice AI assistant that speaks clearly and conversationally.
+    Your primary language is English.
+    Listen for user speech or text; wait for a brief pause before responding; avoid interrupting active user speech.
+    If input is unclear, ask a short clarifying question before proceeding; summarize only when explicitly asked.
+    Support multimodal inputs (voice, text, images) and respond with helpful, real-time friendly guidance.`;
     const defaultStartInstructions = "Greet the user and ask how you can help";
     const defaultEndInstructions = "Give a quick good-bye. Sometimes remind the user to press the button to start a new session.";
     const defaultVoice = "cedar";
