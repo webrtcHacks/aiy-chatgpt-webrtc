@@ -144,10 +144,6 @@
     <input id="openaiApiKey" type="text" placeholder="OpenAI API Key"
            value="Your OPENAI_API_KEY from platform.openai.com">
     <br>
-    <label for="temperature">Temperature: </label>
-    <input id="temperature" type="number" step="0.1" min="0" max="2" placeholder="Temperature" value="1.0"
-           style="width: 60px">
-    <br>
     <label for="voice">Select Voice: </label>
     <select id="voice">
         <option value="alloy">Alloy</option>
@@ -242,7 +238,6 @@
     function sessionStartMessages() {
         const sessionInstruct = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
         const startInstruct = localStorage.getItem("startInstructions") || defaultStartInstructions;
-        const temperature = parseFloat(localStorage.getItem("temperature")) || defaultTemperature;
 
         // Start instructions
         const startMessage = {
@@ -416,7 +411,6 @@
                 },
                 // tool_choice: "auto",      // was "function_call" in beta
                 tools: gptFunctions,
-                // temperature: parseFloat(temperatureEl.value), // no longer valid?
                 tracing: "auto"
             };
 
@@ -530,7 +524,6 @@
     const sessionInstructionsEl = $("sessionInstructions");
     const startInstructionsEl = $("startInstructions");
     const endInstructionsEl = $("endInstructions");
-    const temperatureEl = $("temperature");
     const voiceEl = $("voice");
     const startButtonEl = $("startButton");
     const endButtonEl = $("endButton");
@@ -551,8 +544,7 @@
     const defaultSessionInstructions = "You are a friendly assistant";
     const defaultStartInstructions = "Greet the user and ask how you can help";
     const defaultEndInstructions = "Give a quick good-bye. Sometimes remind the user to press the button to start a new session.";
-    const defaultTemperature = 1.0;
-    const defaultVoice = "alloy";
+    const defaultVoice = "cedar";
 
 
     // Volume controls
@@ -623,7 +615,6 @@
         sessionInstructionsEl.value = localStorage.getItem("sessionInstructions") || defaultSessionInstructions;
         startInstructionsEl.value = localStorage.getItem("startInstructions") || defaultStartInstructions;
         endInstructionsEl.value = localStorage.getItem("endInstructions") || defaultEndInstructions;
-        temperatureEl.value = localStorage.getItem("temperature") || defaultTemperature;
         voiceEl.value = localStorage.getItem("voice") || defaultVoice;
     }
 
@@ -636,7 +627,6 @@
             openaiApiKey: keyEl.value,
             sessionInstructions: sessionInstructionsEl.value,
             startInstructions: startInstructionsEl.value,
-            temperature: temperatureEl.value,
             voice: voiceEl.value
         };
         for (const [k, v] of Object.entries(settings)) {
@@ -655,7 +645,6 @@
         const settings = {
             sessionInstructions: sessionInstructionsEl.value,
             startInstructions: startInstructionsEl.value,
-            temperature: temperatureEl.value,
             voice: voiceEl.value
         };
         for (const [k, v] of Object.entries(settings)) {
@@ -678,7 +667,6 @@
                     instructions: sessionInstructionsEl.value,
                     tools: gptFunctions,
                     tool_choice: "auto",
-                    temperature: parseFloat(temperatureEl.value),
                 }
             };
             dc.send(JSON.stringify(message));
@@ -689,7 +677,7 @@
     }
 
     // Debounce the settings autosave
-    [keyEl, sessionInstructionsEl, startInstructionsEl, endInstructionsEl, temperatureEl, voiceEl]
+    [keyEl, sessionInstructionsEl, startInstructionsEl, endInstructionsEl, voiceEl]
         .forEach((input) => {
             input.addEventListener("change", () => {
                 clearTimeout(window.autoSaveTimeout);
