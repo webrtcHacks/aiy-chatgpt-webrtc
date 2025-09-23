@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>chatGPT Realtime Chat</title>
+    <title>gpt-realtime WebRTC Chat</title>
     <style>
         body {
             background: #222;
@@ -643,9 +643,10 @@
      */
     function resetSettings() {
         const settings = {
-            sessionInstructions: sessionInstructionsEl.value,
-            startInstructions: startInstructionsEl.value,
-            voice: voiceEl.value
+            sessionInstructions: defaultSessionInstructions,
+            startInstructions: defaultStartInstructions,
+            endInstructions: defaultEndInstructions,
+            voice: defaultVoice
         };
         for (const [k, v] of Object.entries(settings)) {
             localStorage.setItem(k, v);
